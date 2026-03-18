@@ -20,6 +20,14 @@ env/
 .vscode/
 .idea/
 
+# Quarto
+quarto/_output/
+.quarto/
+*_files/
+
+# uv
+uv.lock
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,35 @@
+project:
+  type: website
+  output-dir: _output
+
+website:
+  title: "Causal Inference Methods in Economics"
+  navbar:
+    left:
+      - text: "Home"
+        href: index.qmd
+      - text: "Labs"
+        menu:
+          - text: "Lab 1: Randomized Experiments"
+            href: lab1_randomized_experiments.qmd
+          - text: "Lab 2: Matching"
+            href: lab2_matching.qmd
+          - text: "Lab 3: Difference-in-Differences"
+            href: lab3_difference_in_differences.qmd
+          - text: "Lab 4: Instrumental Variables"
+            href: lab4_instrumental_variables.qmd
+          - text: "Lab 5: Regression Discontinuity"
+            href: lab5_regression_discontinuity.qmd
+          - text: "Midterm: COVID-19 Curfew"
+            href: midterm_covid_curfew_evaluation.qmd
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    code-tools: true
+
+execute:
+  jupyter: python3

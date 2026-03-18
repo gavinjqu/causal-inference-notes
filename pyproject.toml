@@ -1,0 +1,24 @@
+[project]
+name = "causal-inference-notes"
+version = "0.1.0"
+description = "Applied causal inference techniques from an Economics Masters course (EC963)"
+authors = [{ name = "Gavin Qu" }]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "statsmodels",
+    "linearmodels",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "jupyter",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff",
+]

@@ -25,11 +25,17 @@ Applied causal inference techniques from an Economics Masters course (EC963), im
 
 ## Setup
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-jupyter notebook
+# Install dependencies and create virtual environment
+uv sync
+
+# Run Jupyter notebooks
+uv run jupyter notebook
+
+# Render Quarto documents
+cd quarto && quarto render
 ```
 
 ## License
