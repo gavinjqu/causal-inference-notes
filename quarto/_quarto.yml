@@ -32,4 +32,4 @@ format:
     code-tools: true
 
 execute:
-  jupyter: python3
+  jupyter: causal-inference

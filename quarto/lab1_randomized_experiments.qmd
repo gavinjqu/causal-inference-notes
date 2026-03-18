@@ -1,0 +1,265 @@
+---
+title: "Lab 1: Randomized Experiments"
+author: "Gavin Qu"
+date: last-modified
+format:
+  html:
+    code-fold: false
+    toc: true
+---
+
+## Introduction
+
+This lab explores two canonical randomized experiments in political science and economics:
+
+- **Part 1**: Female Politicians and Policy Outcomes (Chattopadhyay & Duflo, 2004)
+- **Part 2**: Social Pressure and Voter Turnout (Gerber, Green & Larimer, 2008)
+
+We estimate average treatment effects using difference-in-means, t-tests, and OLS regression,
+and explore balance checks, covariate adjustment, and subgroup analysis.
+
+```{python}
+import numpy as np
+import pandas as pd
+from scipy import stats
+import statsmodels.formula.api as smf
+```
+
+## Part 1: Female Politicians and Policy Outcomes
+
+**Chattopadhyay, R. & Duflo, E. (2004).** *Women as Policy Makers: Evidence from a Randomized Policy Experiment in India.* Econometrica, 72(5), 1409-1443.
+
+In 1993, India amended its constitution to reserve one-third of village council (Gram Panchayat) leader positions for women. Village councils were randomly assigned reservation status, creating a natural experiment to study the effect of female leadership on public goods provision.
+
+### Question 1: Data Exploration
+
+Load and explore the dataset. How many observations and variables are there? What are the minimum and maximum values for the `water` variable?
+
+```{python}
+women = pd.read_csv('../data/lab1/randomized_part1.csv')
+
+print(f'Shape: {women.shape}')
+print(f'\nColumn types:\n{women.dtypes}')
+print(f'\nSummary statistics:')
+women.describe()
+```
+
+### Question 3: Proportion of Female Leaders
+
+Calculate the proportion of female leaders elected for reserved and unreserved GPs. Was the policy effectively implemented?
+
+```{python}
+print(f"Overall proportion female: {women['female'].mean():.4f}")
+print(f"Reserved GPs:             {women.loc[women['reserved'] == 1, 'female'].mean():.4f}")
+print(f"Unreserved GPs:           {women.loc[women['reserved'] == 0, 'female'].mean():.4f}")
+```
+
+The policy was effectively implemented: nearly all reserved GPs elected a female leader, while few unreserved GPs did so.
+
+### Question 4: Average Treatment Effect (Difference in Means)
+
+Calculate the estimated ATE of reserved GPs on investment in water and irrigation infrastructure.
+
+```{python}
+treated = women[women['reserved'] == 1]
+control = women[women['reserved'] == 0]
+
+water_ate = treated['water'].mean() - control['water'].mean()
+irrigation_ate = treated['irrigation'].mean() - control['irrigation'].mean()
+
+print(f'ATE (water):      {water_ate:.4f}')
+print(f'ATE (irrigation): {irrigation_ate:.4f}')
+```
+
+### Question 5: Standard Errors of the Difference in Means
+
+Calculate the standard error using the formula:
+
+$$SE(\hat{\tau}) = \sqrt{\frac{\text{Var}(Y_i | D_i=1)}{n_1} + \frac{\text{Var}(Y_i | D_i=0)}{n_0}}$$
+
+```{python}
+n_treat = len(treated)
+n_control = len(control)
+
+water_se = np.sqrt(treated['water'].var() / n_treat + control['water'].var() / n_control)
+irrigation_se = np.sqrt(treated['irrigation'].var() / n_treat + control['irrigation'].var() / n_control)
+
+print(f'SE (water):      {water_se:.4f}')
+print(f'SE (irrigation): {irrigation_se:.4f}')
+```
+
+### Question 6: Hypothesis Testing
+
+Calculate the t-statistics and test against the null hypothesis $H_0: \tau = 0$ at the 95% confidence level. Under the CLT, the test statistic follows approximately $N(0,1)$ under the null.
+
+```{python}
+water_t = water_ate / water_se
+irrigation_t = irrigation_ate / irrigation_se
+
+print(f't-statistic (water):      {water_t:.4f}')
+print(f't-statistic (irrigation): {irrigation_t:.4f}')
+print(f'\nCritical value (95%): 1.96')
+print(f'Water: {"Reject H0" if abs(water_t) > 1.96 else "Fail to reject H0"}')
+print(f'Irrigation: {"Reject H0" if abs(irrigation_t) > 1.96 else "Fail to reject H0"}')
+```
+
+### Question 7: Confidence Intervals
+
+Construct 95% confidence intervals for each ATE and present the results in a summary table.
+
+```{python}
+results = pd.DataFrame({
+    'Outcome': ['Water', 'Irrigation'],
+    'ATE': [water_ate, irrigation_ate],
+    'SE': [water_se, irrigation_se],
+    'Lower CI': [water_ate - 1.96 * water_se, irrigation_ate - 1.96 * irrigation_se],
+    'Upper CI': [water_ate + 1.96 * water_se, irrigation_ate + 1.96 * irrigation_se]
+})
+results
+```
+
+### Question 8: Interpretation
+
+The confidence interval for water does not contain zero, indicating that reservation significantly increased investment in drinking water infrastructure. The interval for irrigation contains zero, suggesting no statistically significant effect on irrigation investment at the 95% level. This implies female leaders prioritize different public goods than male leaders.
+
+### Question 9: Verification with `scipy.stats.ttest_ind`
+
+```{python}
+water_ttest = stats.ttest_ind(treated['water'], control['water'])
+irrigation_ttest = stats.ttest_ind(treated['irrigation'], control['irrigation'])
+
+print('Water t-test:')
+print(f'  t-statistic: {water_ttest.statistic:.4f}')
+print(f'  p-value:     {water_ttest.pvalue:.4f}')
+print(f'\nIrrigation t-test:')
+print(f'  t-statistic: {irrigation_ttest.statistic:.4f}')
+print(f'  p-value:     {irrigation_ttest.pvalue:.4f}')
+```
+
+### Question 10: OLS Regression
+
+Estimate the ATE via OLS: $Y_i = \beta_0 + \beta_1 \cdot \text{Reserved}_i + \varepsilon_i$
+
+The coefficient $\hat{\beta}_1$ is numerically identical to the difference-in-means estimator.
+
+```{python}
+water_ols = smf.ols('water ~ reserved', data=women).fit()
+print(water_ols.summary().tables[1])
+
+print()
+
+irrigation_ols = smf.ols('irrigation ~ reserved', data=women).fit()
+print(irrigation_ols.summary().tables[1])
+```
+
+---
+
+## Part 2: Social Pressure and Voter Turnout
+
+**Gerber, A.S., Green, D.P. & Larimer, C.W. (2008).** *Social Pressure and Voter Turnout: Evidence from a Large-Scale Field Experiment.* American Political Science Review, 102(1), 33-48.
+
+This experiment randomly assigned ~344,000 Michigan households to receive one of four mailings designed to increase turnout, or to a control group. The treatments varied the degree of social pressure applied:
+
+- **Civic Duty**: Reminded recipients of their civic duty to vote
+- **Hawthorne**: Told recipients they were being studied
+- **Self**: Showed recipients their own past voting record
+- **Neighbors**: Showed recipients their neighbors' past voting records
+
+### Question 1: Turnout Rates by Experimental Arm
+
+Calculate turnout rates and sample sizes for each treatment condition.
+
+```{python}
+gerber = pd.read_csv('../data/lab1/randomized_part2.csv')
+
+print(f'Shape: {gerber.shape}')
+print(f'Columns: {list(gerber.columns)}')
+gerber.head()
+```
+
+```{python}
+groups = ['Control', 'Civic Duty', 'Hawthorne', 'Self', 'Neighbors']
+
+turnout = {g: gerber.loc[gerber['treatment'] == g, 'voted'].mean() * 100 for g in groups}
+counts = {g: (gerber['treatment'] == g).sum() for g in groups}
+
+table_two = pd.DataFrame({
+    'Turnout (%)': {g: round(turnout[g], 1) for g in groups},
+    'N': counts
+})
+table_two
+```
+
+### Question 2: T-tests Against Control
+
+Test whether each treatment significantly increased turnout relative to the control group.
+
+```{python}
+control_voted = gerber.loc[gerber['treatment'] == 'Control', 'voted']
+
+for g in ['Civic Duty', 'Hawthorne', 'Self', 'Neighbors']:
+    treat_voted = gerber.loc[gerber['treatment'] == g, 'voted']
+    ttest = stats.ttest_ind(treat_voted, control_voted)
+    diff = treat_voted.mean() - control_voted.mean()
+    print(f'{g:12s}: diff = {diff:.4f}, t = {ttest.statistic:.4f}, '
+          f'95% CI = [{diff - 1.96*diff/ttest.statistic:.4f}, {diff + 1.96*diff/ttest.statistic:.4f}]')
+```
+
+### Question 3: Create Covariates and Balance Checks
+
+Create three new variables and run balance checks to verify that randomization produced comparable groups.
+
+```{python}
+gerber['female'] = (gerber['sex'] == 'female').astype(int)
+gerber['age'] = 2006 - gerber['yob']
+gerber['turnout04'] = (gerber['p2004'] == 'Yes').astype(int)
+```
+
+```{python}
+# Balance check: regress each covariate on treatment assignment
+for var in ['female', 'age', 'turnout04']:
+    model = smf.ols(f'{var} ~ treatment', data=gerber).fit()
+    print(f'--- Balance check: {var} ---')
+    print(model.summary().tables[1])
+    print()
+```
+
+If randomization was successful, treatment coefficients should be small and statistically insignificant, indicating no systematic differences in covariates across groups.
+
+### Question 4: ATE With and Without Covariates
+
+Compare treatment effect estimates from a baseline model (treatment only) and a covariate-adjusted model. In a randomized experiment, adding covariates should not change the point estimates substantially but may reduce standard errors.
+
+```{python}
+baseline = smf.ols('voted ~ treatment', data=gerber).fit()
+covariate = smf.ols('voted ~ treatment + female + age + turnout04', data=gerber).fit()
+
+treat_params = [p for p in baseline.params.index if p.startswith('treatment')]
+
+comparison = pd.DataFrame({
+    'Baseline': baseline.params[treat_params],
+    'With Covariates': covariate.params[treat_params]
+})
+comparison
+```
+
+### Question 5: Subgroup Analysis by Gender
+
+Estimate treatment effects separately for men and women, then use an interaction model to test whether the treatment effect differs by gender.
+
+```{python}
+male_model = smf.ols('voted ~ treatment', data=gerber[gerber['female'] == 0]).fit()
+female_model = smf.ols('voted ~ treatment', data=gerber[gerber['female'] == 1]).fit()
+
+subgroup = pd.DataFrame({
+    'Male': male_model.params[treat_params],
+    'Female': female_model.params[treat_params]
+})
+subgroup
+```
+
+```{python}
+# Interaction model: treatment x female
+interaction = smf.ols('voted ~ treatment * female', data=gerber).fit()
+print(interaction.summary().tables[1])
+```

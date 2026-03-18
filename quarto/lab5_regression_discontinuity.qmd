@@ -83,7 +83,7 @@ print(f'  Control: {(1 - islamic_rdd["islamic_win"]).sum()}')
 
 Estimate the local average treatment effect at the threshold using a linear regression that controls for the running variable:
 
-$$Y_i = \beta_0 + \beta_1 \cdot \text{margin}_i + \tau \cdot \text{islamic\_win}_i + \varepsilon_i$$
+$$Y_i = \zzbeta_0 + \beta_1 \cdot \text{margin}_i + \tau \cdot \text{islamic\_win}_i + \varepsilon_i$$
 
 The coefficient $\hat{\tau}$ is the RDD estimate of the causal effect at the cutoff.
 

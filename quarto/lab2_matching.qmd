@@ -1,0 +1,287 @@
+---
+title: "Lab 2: Matching Methods"
+author: "Gavin Qu"
+date: last-modified
+format:
+  html:
+    code-fold: false
+    toc: true
+---
+
+## Introduction
+
+This lab applies matching estimators to two classic studies:
+
+- **Part 1**: MPs for Sale? Returns to Elected Office (Eggers & Hainmueller, 2009)
+- **Part 2**: National Supported Work Demonstration (Dehejia & Wahba, 1999)
+
+We implement exact matching, nearest-neighbor matching with Mahalanobis distance, and compare observational estimates to experimental benchmarks.
+
+```{python}
+import numpy as np
+import pandas as pd
+from scipy import stats
+import statsmodels.formula.api as smf
+from sklearn.neighbors import NearestNeighbors
+```
+
+## Part 1: MPs for Sale?
+
+**Eggers, A.C. & Hainmueller, J. (2009).** *MPs for Sale? Returns to Office in Postwar British Politics.* American Political Science Review, 103(4), 513-533.
+
+This study examines whether serving as a Member of Parliament (MP) causes personal wealth accumulation. The treatment is winning a parliamentary election; the outcome is log real gross wealth at death.
+
+### Question 1: Data Exploration
+
+```{python}
+mps = pd.read_csv('../data/lab2/matching_part1.csv')
+
+print(f'Shape: {mps.shape}')
+print(f'\nColumn types:')
+print(mps.dtypes)
+print(f'\nYear of birth range: {mps["yob"].min()} - {mps["yob"].max()}')
+mps.describe()
+```
+
+### Question 2: Naive ATE Estimate
+
+Estimate the average treatment effect using a t-test and bivariate OLS. Can we interpret this as causal?
+
+```{python}
+# t-test
+treated = mps.loc[mps['treated'] == 1, 'lnrealgross']
+control = mps.loc[mps['treated'] == 0, 'lnrealgross']
+ttest = stats.ttest_ind(treated, control)
+print(f'Difference in means: {treated.mean() - control.mean():.4f}')
+print(f't-statistic: {ttest.statistic:.4f}, p-value: {ttest.pvalue:.4f}')
+
+# OLS
+print()
+ols = smf.ols('lnrealgross ~ treated', data=mps).fit()
+print(ols.summary().tables[1])
+```
+
+This naive estimate is unlikely to be causal since selection into Parliament is non-random. Candidates who win elections may differ systematically from losers in ways that also affect wealth (e.g., social connections, education, family background).
+
+### Question 3: Identifying Assumption for Matching
+
+The **Conditional Independence Assumption (CIA)** states that, conditional on observed covariates $X$, treatment assignment is independent of potential outcomes:
+
+$$\{Y(0), Y(1)\} \perp D \mid X$$
+
+In this context, it means that among candidates with the same gender, aristocratic status, and schooling, winning or losing the election is effectively random with respect to wealth outcomes.
+
+### Question 4: Exact Matching on Gender, Aristocratic Title, and Eton
+
+Implement exact matching with replacement to estimate the ATT. For each treated unit, find control units with identical values on the matching covariates.
+
+```{python}
+def exact_match_att(df, outcome, treatment, match_vars):
+    """Exact matching with replacement. Returns ATT and matched indices."""
+    treated_df = df[df[treatment] == 1].copy()
+    control_df = df[df[treatment] == 0].copy()
+
+    matched_treated_idx = []
+    matched_control_idx = []
+
+    for idx, row in treated_df.iterrows():
+        # Find controls with exact match on all covariates
+        mask = pd.Series(True, index=control_df.index)
+        for var in match_vars:
+            mask &= (control_df[var] == row[var])
+        matches = control_df[mask]
+
+        if len(matches) > 0:
+            matched_treated_idx.append(idx)
+            # With replacement: use mean of all matches (ties)
+            matched_control_idx.append(matches.index.tolist())
+
+    # Calculate ATT
+    att_diffs = []
+    for t_idx, c_indices in zip(matched_treated_idx, matched_control_idx):
+        t_outcome = df.loc[t_idx, outcome]
+        c_outcome = df.loc[c_indices, outcome].mean()
+        att_diffs.append(t_outcome - c_outcome)
+
+    att = np.mean(att_diffs)
+    att_se = np.std(att_diffs, ddof=1) / np.sqrt(len(att_diffs))
+
+    return att, att_se, matched_treated_idx, matched_control_idx
+
+match_vars_basic = ['female', 'aristo', 'scat_eto']
+att, att_se, t_idx, c_idx = exact_match_att(mps, 'lnrealgross', 'treated', match_vars_basic)
+
+print(f'ATT estimate: {att:.4f}')
+print(f'SE:           {att_se:.4f}')
+print(f't-statistic:  {att/att_se:.4f}')
+print(f'Matched treated observations: {len(t_idx)}')
+```
+
+### Question 5: Pre- and Post-Match Balance Tests
+
+Compare covariate balance between treated and control groups before and after matching.
+
+```{python}
+# Pre-match balance
+print('=== Pre-Match Balance ===')
+for var in match_vars_basic:
+    t = stats.ttest_ind(mps.loc[mps['treated'] == 1, var], mps.loc[mps['treated'] == 0, var])
+    print(f'{var:10s}: diff = {mps.loc[mps["treated"]==1, var].mean() - mps.loc[mps["treated"]==0, var].mean():.4f}, '
+          f't = {t.statistic:.4f}, p = {t.pvalue:.4f}')
+
+print()
+
+# Post-match balance - collect matched indices
+print('=== Post-Match Balance ===')
+flat_c_idx = [idx for sublist in c_idx for idx in sublist]
+for var in match_vars_basic:
+    t_vals = mps.loc[t_idx, var]
+    c_vals = mps.loc[flat_c_idx, var]
+    t = stats.ttest_ind(t_vals, c_vals)
+    print(f'{var:10s}: diff = {t_vals.mean() - c_vals.mean():.4f}, '
+          f't = {t.statistic:.4f}, p = {t.pvalue:.4f}')
+```
+
+After exact matching, covariates should be perfectly balanced (difference = 0).
+
+### Question 7: Extended Covariate Matching
+
+Expand the set of matching covariates to include all schooling, university, and occupation categories.
+
+```{python}
+extended_vars = ['female', 'aristo', 'scat_pub', 'scat_eto', 'scat_nm', 'scat_sec',
+                 'ucat_ox', 'ucat_deg', 'ucat_nm',
+                 'oc_teacherall', 'oc_barrister', 'oc_solicitor', 'oc_dr', 'oc_civil_serv',
+                 'oc_local_politics', 'oc_business', 'oc_white_collar', 'oc_union_org',
+                 'oc_journalist', 'oc_miner']
+
+att_ext, att_se_ext, t_idx_ext, c_idx_ext = exact_match_att(mps, 'lnrealgross', 'treated', extended_vars)
+
+print(f'ATT (extended matching): {att_ext:.4f}')
+print(f'SE:                      {att_se_ext:.4f}')
+print(f'Matched treated obs:     {len(t_idx_ext)}')
+print(f'\nNote: More covariates means fewer exact matches but potentially less bias.')
+```
+
+### Question 8: Subgroup Matching by Party
+
+Run the matching analysis separately for Labour and Conservative candidates, including year of birth and year of death.
+
+```{python}
+match_vars_full = ['yob', 'yod'] + extended_vars
+
+# Labour
+mps_labour = mps[mps['labour'] == 1].reset_index(drop=True)
+att_lab, se_lab, _, _ = exact_match_att(mps_labour, 'lnrealgross', 'treated', match_vars_full)
+print(f'Labour ATT:       {att_lab:.4f} (SE: {se_lab:.4f})')
+
+# Conservative
+mps_tory = mps[mps['tory'] == 1].reset_index(drop=True)
+att_con, se_con, _, _ = exact_match_att(mps_tory, 'lnrealgross', 'treated', match_vars_full)
+print(f'Conservative ATT: {att_con:.4f} (SE: {se_con:.4f})')
+```
+
+---
+
+## Part 2: National Supported Work Demonstration
+
+**Dehejia, R.H. & Wahba, S. (1999).** *Causal Effects in Nonexperimental Studies: Reevaluating the Evaluation of Training Programs.* Journal of the American Statistical Association, 94(448), 1053-1062.
+
+The NSW was a randomized job training program. We first establish an experimental benchmark, then estimate the treatment effect from observational data using matching and compare the two.
+
+### Question 2: Data Exploration
+
+```{python}
+nsw_exp = pd.read_csv('../data/lab2/matching_part2a.csv', sep=';')
+nsw_obs = pd.read_csv('../data/lab2/matching_part2b.csv', sep=';')
+
+print(f'Experimental data: {nsw_exp.shape}')
+print(f'Columns: {list(nsw_exp.columns)}')
+print(f'Age range: {nsw_exp["age"].min()} - {nsw_exp["age"].max()}')
+print(f'\nObservational data: {nsw_obs.shape}')
+print(f'Columns: {list(nsw_obs.columns)}')
+nsw_exp.describe()
+```
+
+### Question 3: Experimental Benchmark vs. Naive Observational Estimate
+
+The experimental ATE provides a credible causal estimate. The naive observational comparison is badly biased because the comparison group (drawn from CPS/PSID surveys) differs systematically from the treated group.
+
+```{python}
+# Experimental benchmark
+exp_model = smf.ols('re78 ~ nsw', data=nsw_exp).fit()
+print('=== Experimental Benchmark ===')
+print(f'ATE: {exp_model.params["nsw"]:.2f}')
+print(f'SE:  {exp_model.bse["nsw"]:.2f}')
+print(f'p:   {exp_model.pvalues["nsw"]:.4f}')
+
+print()
+
+# Naive observational estimate
+obs_model = smf.ols('re78 ~ treat', data=nsw_obs).fit()
+print('=== Naive Observational Estimate ===')
+print(f'ATE: {obs_model.params["treat"]:.2f}')
+print(f'SE:  {obs_model.bse["treat"]:.2f}')
+print(f'p:   {obs_model.pvalues["treat"]:.4f}')
+print(f'\nBias: {obs_model.params["treat"] - exp_model.params["nsw"]:.2f}')
+```
+
+### Question 4: Nearest-Neighbor Matching (Mahalanobis Distance)
+
+Use matching on observational data to try to recover the experimental benchmark. Mahalanobis distance matching accounts for the scale and correlation of covariates.
+
+```{python}
+def nn_match_att(df, outcome, treatment, match_vars, M=1):
+    """Nearest-neighbor matching with Mahalanobis distance (ATT)."""
+    treated_df = df[df[treatment] == 1].copy()
+    control_df = df[df[treatment] == 0].copy()
+
+    X_treat = treated_df[match_vars].values
+    X_control = control_df[match_vars].values
+
+    # Compute Mahalanobis distance via whitening transform
+    X_all = df[match_vars].values
+    cov_matrix = np.cov(X_all, rowvar=False)
+    # Regularize covariance matrix
+    cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
+    L = np.linalg.cholesky(cov_matrix)
+    L_inv = np.linalg.inv(L)
+
+    X_treat_w = X_treat @ L_inv.T
+    X_control_w = X_control @ L_inv.T
+
+    nn = NearestNeighbors(n_neighbors=M, metric='euclidean')
+    nn.fit(X_control_w)
+    distances, indices = nn.kneighbors(X_treat_w)
+
+    # ATT: for each treated, subtract mean of M nearest controls
+    y_treat = treated_df[outcome].values
+    y_control = control_df[outcome].values
+
+    diffs = y_treat - np.array([y_control[idx].mean() for idx in indices])
+    att = diffs.mean()
+    att_se = diffs.std(ddof=1) / np.sqrt(len(diffs))
+
+    return att, att_se
+
+match_covs = ['age', 'educ', 'black', 'married', 'nodegree', 're74', 're75', 'hisp']
+
+att_obs, se_obs = nn_match_att(nsw_obs, 're78', 'treat', match_covs, M=1)
+print(f'Matching ATT:            {att_obs:.2f} (SE: {se_obs:.2f})')
+print(f'Experimental benchmark:  {exp_model.params["nsw"]:.2f}')
+```
+
+### Question 5: Sensitivity to Excluding Pre-Treatment Earnings
+
+How important are the pre-treatment earnings variables (`re74`, `re75`) for satisfying the CIA?
+
+```{python}
+match_covs_no_earn = ['age', 'educ', 'black', 'married', 'nodegree', 'hisp']
+
+att_no_earn, se_no_earn = nn_match_att(nsw_obs, 're78', 'treat', match_covs_no_earn, M=5)
+print(f'Matching ATT (without pre-treatment earnings): {att_no_earn:.2f} (SE: {se_no_earn:.2f})')
+print(f'Matching ATT (with pre-treatment earnings):    {att_obs:.2f}')
+print(f'Experimental benchmark:                        {exp_model.params["nsw"]:.2f}')
+print(f'\nExcluding pre-treatment earnings dramatically changes the estimate,')
+print('suggesting these variables are critical for satisfying the CIA.')
+```

@@ -16,9 +16,10 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "jupyter",
+    "ipykernel>=7.2.0",
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "ruff",
 ]

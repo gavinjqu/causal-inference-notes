@@ -1,0 +1,252 @@
+---
+title: "Lab 4: Instrumental Variables"
+author: "Gavin Qu"
+date: last-modified
+format:
+  html:
+    code-fold: false
+    toc: true
+---
+
+## Introduction
+
+This lab covers instrumental variables (IV) estimation through two applications:
+
+- **Part 1**: Children's Television and Educational Performance (Sesame Street experiment)
+- **Part 2**: Do Institutions Cause Growth? (Acemoglu, Johnson & Robinson, 2001)
+
+We estimate the Intent-to-Treat (ITT) effect, the Local Average Treatment Effect (LATE) via the Wald estimator, and two-stage least squares (2SLS).
+
+```{python}
+import numpy as np
+import pandas as pd
+from scipy import stats
+import statsmodels.formula.api as smf
+from linearmodels.iv import IV2SLS
+```
+
+## Part 1: Children's Television and Educational Performance
+
+In the early 1970s, the Educational Testing Service conducted an experiment to evaluate the educational impact of Sesame Street. Children were randomly assigned to receive encouragement to watch the show, but compliance was imperfect: some encouraged children did not watch, and some non-encouraged children did.
+
+- **Instrument** ($Z$): `encouraged` (random assignment to watch)
+- **Treatment** ($D$): `watched` (actually watching Sesame Street)
+- **Outcome** ($Y$): `letters` (post-test literacy score, 0-63)
+
+### Question 1: Data Exploration
+
+```{python}
+sesame = pd.read_csv('../data/lab4/iv_part1.csv')
+
+print(f'Shape: {sesame.shape}')
+print(f'\nSummary:')
+sesame.describe()
+```
+
+### Question 2: Unit Types
+
+In the IV framework with imperfect compliance, we distinguish four types:
+
+| Type | $D(Z=1)$ | $D(Z=0)$ | Description |
+|------|-----------|-----------|-------------|
+| **Compliers** | Watch | Don't watch | Respond to encouragement |
+| **Always-takers** | Watch | Watch | Would watch regardless |
+| **Never-takers** | Don't watch | Don't watch | Would not watch regardless |
+| **Defiers** | Don't watch | Watch | Do the opposite (assumed away) |
+
+### Question 3: Compliance Analysis
+
+Examine the cross-tabulation of assignment and actual treatment to understand the extent of non-compliance.
+
+```{python}
+# Cross-tabulation
+print('=== Counts ===')
+ct = pd.crosstab(sesame['encouraged'], sesame['watched'], margins=True)
+ct.index = ['Not encouraged', 'Encouraged', 'Total']
+ct.columns = ['Not watched', 'Watched', 'Total']
+print(ct)
+
+print('\n=== Proportions (by row) ===')
+pt = pd.crosstab(sesame['encouraged'], sesame['watched'], normalize='index')
+pt.index = ['Not encouraged', 'Encouraged']
+pt.columns = ['Not watched', 'Watched']
+print(pt.round(4))
+```
+
+Two-sided non-compliance: some encouraged children did not watch (non-compliers in the treatment group), and some non-encouraged children watched anyway (always-takers in the control group).
+
+### Question 4: Proportion of Compliers
+
+Under the monotonicity assumption (no defiers):
+
+$$\pi_c = E[D_i | Z_i = 1] - E[D_i | Z_i = 0]$$
+
+```{python}
+d_z1 = sesame.loc[sesame['encouraged'] == 1, 'watched'].mean()
+d_z0 = sesame.loc[sesame['encouraged'] == 0, 'watched'].mean()
+proportion_compliers = d_z1 - d_z0
+
+print(f'P(watched | encouraged):     {d_z1:.4f}')
+print(f'P(watched | not encouraged): {d_z0:.4f}')
+print(f'Proportion of compliers:     {proportion_compliers:.4f}')
+```
+
+### Question 5: Intent-to-Treat (ITT) Effect
+
+The ITT estimates the causal effect of *assignment* (not treatment) on the outcome:
+
+$$\text{ITT} = E[Y_i | Z_i = 1] - E[Y_i | Z_i = 0]$$
+
+```{python}
+y_z1 = sesame.loc[sesame['encouraged'] == 1, 'letters'].mean()
+y_z0 = sesame.loc[sesame['encouraged'] == 0, 'letters'].mean()
+itt = y_z1 - y_z0
+
+print(f'Mean letters (encouraged):     {y_z1:.4f}')
+print(f'Mean letters (not encouraged): {y_z0:.4f}')
+print(f'ITT:                           {itt:.4f}')
+
+print('\nVerification via OLS:')
+itt_model = smf.ols('letters ~ encouraged', data=sesame).fit()
+print(itt_model.summary().tables[1])
+```
+
+The ITT combines the effect of the treatment on those who comply with the dilution from non-compliers. Being *encouraged* to watch Sesame Street increases literacy scores by approximately 3 points.
+
+### Questions 6-7: Local Average Treatment Effect (LATE)
+
+The LATE estimates the effect of actually *watching* for compliers, using the Wald estimator:
+
+$$\text{LATE} = \frac{\text{ITT}}{\pi_c} = \frac{E[Y_i|Z_i=1] - E[Y_i|Z_i=0]}{E[D_i|Z_i=1] - E[D_i|Z_i=0]}$$
+
+```{python}
+late = itt / proportion_compliers
+
+print(f'ITT:                     {itt:.4f}')
+print(f'Proportion of compliers: {proportion_compliers:.4f}')
+print(f'LATE (Wald estimator):   {late:.4f}')
+```
+
+The LATE is substantially larger than the ITT because it scales up to account for the dilution from non-compliers. For children who complied with encouragement, watching Sesame Street increased literacy scores by approximately 8 points.
+
+### Question 8: ITT vs. LATE
+
+The **LATE** is of greater interest to Sesame Street's producers because it isolates the causal effect of *actually watching* the show, whereas the ITT conflates the treatment effect with non-compliance rates.
+
+### Question 9: Exclusion Restriction
+
+The exclusion restriction requires that encouragement affects literacy *only through* its effect on watching behavior. This is plausible: being told to watch Sesame Street should not directly improve literacy unless the child actually watches. However, one could argue that encouragement might prompt parents to engage in other educational activities, potentially violating the restriction.
+
+---
+
+## Part 2: Do Institutions Cause Growth?
+
+**Acemoglu, D., Johnson, S. & Robinson, J.A. (2001).** *The Colonial Origins of Comparative Development: An Empirical Investigation.* American Economic Review, 91(5), 1369-1401.
+
+AJR argue that European colonial settlers established different types of institutions depending on local disease environments. Where settler mortality was high, extractive institutions were established; where it was low, settlers replicated inclusive European institutions.
+
+- **Outcome** ($Y$): `GDP` (log GDP per capita)
+- **Treatment** ($D$): `Exprop` (protection against expropriation, a proxy for institutional quality)
+- **Instrument** ($Z$): `logMort` (log settler mortality)
+
+```{python}
+ajr = pd.read_csv('../data/lab4/iv_part2.csv')
+
+print(f'Shape: {ajr.shape}')
+ajr.describe()
+```
+
+### Question 2: OLS Estimates (Biased)
+
+The OLS estimate of institutional quality on GDP is likely biased due to reverse causality and omitted variables.
+
+```{python}
+ols1 = smf.ols('GDP ~ Exprop', data=ajr).fit()
+ols2 = smf.ols('GDP ~ Exprop + Africa + Asia + Namer + Samer', data=ajr).fit()
+
+print('=== OLS without covariates ===')
+print(ols1.summary().tables[1])
+print(f'\n=== OLS with regional controls ===')
+print(ols2.summary().tables[1])
+```
+
+### Question 3: Reduced Form
+
+The reduced form regresses the outcome directly on the instrument. This estimates the ITT: the total effect of settler mortality on GDP.
+
+```{python}
+rf1 = smf.ols('GDP ~ logMort', data=ajr).fit()
+rf2 = smf.ols('GDP ~ logMort + Africa + Asia + Namer + Samer', data=ajr).fit()
+
+print('=== Reduced form without covariates ===')
+print(rf1.summary().tables[1])
+print(f'\n=== Reduced form with regional controls ===')
+print(rf2.summary().tables[1])
+```
+
+### Question 4: First Stage and F-test for Weak Instruments
+
+The first stage regresses the endogenous treatment on the instrument. The F-statistic tests instrument relevance; a common rule of thumb requires $F > 10$.
+
+```{python}
+# First stage without covariates
+fs1 = smf.ols('Exprop ~ logMort', data=ajr).fit()
+print('=== First stage (no covariates) ===')
+print(fs1.summary().tables[1])
+print(f'F-statistic: {fs1.fvalue:.2f}')
+
+print()
+
+# First stage with covariates
+fs_restricted = smf.ols('Exprop ~ Africa + Asia + Namer + Samer', data=ajr).fit()
+fs_full = smf.ols('Exprop ~ logMort + Africa + Asia + Namer + Samer', data=ajr).fit()
+
+print('=== First stage (with covariates) ===')
+print(fs_full.summary().tables[1])
+
+# F-test for instrument: compare model with and without logMort
+from scipy.stats import f as f_dist
+n = len(ajr)
+k_full = len(fs_full.params)
+k_restricted = len(fs_restricted.params)
+f_stat = ((fs_restricted.ssr - fs_full.ssr) / (k_full - k_restricted)) / (fs_full.ssr / (n - k_full))
+f_pval = 1 - f_dist.cdf(f_stat, k_full - k_restricted, n - k_full)
+
+print(f'\nF-test for instrument (with covariates): F = {f_stat:.2f}, p = {f_pval:.4f}')
+print(f'F < 10 suggests the instrument may be weak when controlling for region.')
+```
+
+### Question 5: Two-Stage Least Squares (2SLS)
+
+Estimate the LATE using 2SLS via the `linearmodels` package.
+
+```{python}
+# 2SLS without covariates
+iv1 = IV2SLS(
+    dependent=ajr['GDP'],
+    exog=pd.DataFrame({'const': 1}, index=ajr.index),
+    endog=ajr[['Exprop']],
+    instruments=ajr[['logMort']]
+).fit(cov_type='unadjusted')
+
+print('=== 2SLS without covariates ===')
+print(iv1.summary.tables[1])
+
+print()
+
+# 2SLS with covariates
+exog_vars = ajr[['Africa', 'Asia', 'Namer', 'Samer']].copy()
+exog_vars['const'] = 1
+
+iv2 = IV2SLS(
+    dependent=ajr['GDP'],
+    exog=exog_vars,
+    endog=ajr[['Exprop']],
+    instruments=ajr[['logMort']]
+).fit(cov_type='unadjusted')
+
+print('=== 2SLS with regional controls ===')
+print(iv2.summary.tables[1])
+```
+
+The IV estimates suggest a large and statistically significant causal effect of institutions on GDP growth. A one-unit increase in protection against expropriation causes approximately a 0.9 unit increase in log GDP per capita. The IV estimates are larger than OLS, consistent with OLS being attenuated by measurement error in institutional quality.

@@ -1,0 +1,239 @@
+---
+title: "Lab 3: Difference-in-Differences"
+author: "Gavin Qu"
+date: last-modified
+format:
+  html:
+    code-fold: false
+    toc: true
+---
+
+## Introduction
+
+This lab implements difference-in-differences (DiD) estimation using two landmark studies:
+
+- **Part 1**: Refugees and Support for the Far Right (Dinas et al., 2018)
+- **Part 2**: Minimum Wages and Employment (Card & Krueger, 1994)
+
+We cover manual DiD computation, interaction regressions, parallel trends assessment, and two-way fixed effects models.
+
+```{python}
+import numpy as np
+import pandas as pd
+from scipy import stats
+import statsmodels.formula.api as smf
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_style('whitegrid')
+plt.rcParams['figure.figsize'] = (10, 6)
+```
+
+## Part 1: Refugees and Support for the Far Right
+
+**Dinas, E., Matakos, K., Xefteris, D. & Hangartner, D. (2019).** *Waking Up the Golden Dawn: Does Exposure to the Refugee Crisis Increase Support for Extreme-Right Parties?* Political Analysis, 27(2), 244-254.
+
+The 2015 refugee crisis led to large-scale arrivals on Greek islands. This study uses the quasi-random assignment of refugees across municipalities to estimate the effect of refugee exposure on support for the far-right Golden Dawn party.
+
+### Question 1: Data Exploration
+
+```{python}
+muni = pd.read_csv('../data/lab3/did_part1.csv')
+
+print(f'Shape: {muni.shape}')
+print(f'Columns: {list(muni.columns)}')
+print(f'\ntrarrprop range: {muni["trarrprop"].min():.4f} - {muni["trarrprop"].max():.4f}')
+print(f'Years: {sorted(muni["year"].unique())}')
+muni.head()
+```
+
+### Question 2: Post-Treatment-Only Regression
+
+Using only 2016 observations, compare Golden Dawn vote share between treated and untreated municipalities. Does the coefficient represent the ATT?
+
+```{python}
+post = muni[muni['year'] == 2016]
+post_model = smf.ols('gdvote ~ treatment', data=post).fit()
+print(post_model.summary().tables[1])
+```
+
+**No**, this does not represent the ATT. Comparing only post-treatment outcomes ignores pre-existing differences between treated and untreated municipalities. Any systematic differences in baseline support for Golden Dawn would bias the estimate.
+
+### Question 3: Manual Difference-in-Differences
+
+Calculate the DiD estimator manually:
+
+$$\hat{\tau}_{DiD} = (\bar{Y}_{T,post} - \bar{Y}_{C,post}) - (\bar{Y}_{T,pre} - \bar{Y}_{C,pre})$$
+
+```{python}
+post_diff = (muni.loc[(muni['ever_treated'] == True) & (muni['year'] == 2016), 'gdvote'].mean() -
+             muni.loc[(muni['ever_treated'] == False) & (muni['year'] == 2016), 'gdvote'].mean())
+
+pre_diff = (muni.loc[(muni['ever_treated'] == True) & (muni['year'] == 2015), 'gdvote'].mean() -
+            muni.loc[(muni['ever_treated'] == False) & (muni['year'] == 2015), 'gdvote'].mean())
+
+did = post_diff - pre_diff
+
+print(f'Post-treatment difference:  {post_diff:.6f}')
+print(f'Pre-treatment difference:   {pre_diff:.6f}')
+print(f'Difference-in-differences:  {did:.6f}')
+```
+
+### Question 4: DiD via Interaction Regression
+
+Estimate the DiD using the interaction specification:
+
+$$Y_{it} = \beta_0 + \beta_1 \cdot \text{Treated}_i + \beta_2 \cdot \text{Post}_t + \beta_3 \cdot (\text{Treated}_i \times \text{Post}_t) + \varepsilon_{it}$$
+
+The coefficient $\hat{\beta}_3$ is the DiD estimator.
+
+```{python}
+muni_1516 = muni[muni['year'] >= 2015].copy()
+muni_1516['post'] = (muni_1516['year'] == 2016).astype(int)
+
+did_model = smf.ols('gdvote ~ ever_treated * post', data=muni_1516).fit()
+print(did_model.summary().tables[1])
+```
+
+### Question 5-6: Parallel Trends Assessment
+
+The DiD strategy relies on the **parallel trends assumption**: absent treatment, the outcome would have evolved similarly for treated and control groups. We assess this visually by plotting group means over time.
+
+```{python}
+#| label: fig-parallel-trends
+#| fig-cap: "Parallel trends assessment for Golden Dawn support"
+
+trends = muni.groupby(['year', 'ever_treated'])['gdvote'].mean().reset_index()
+
+fig, ax = plt.subplots(figsize=(10, 6))
+for treated, label, color in [(True, 'Treated', 'red'), (False, 'Control', 'blue')]:
+    subset = trends[trends['ever_treated'] == treated]
+    ax.plot(subset['year'], subset['gdvote'], 'o-', color=color, label=label, markersize=8)
+
+ax.axvline(x=2015.5, color='gray', linestyle='--', alpha=0.7, label='Treatment')
+ax.set_xlabel('Year')
+ax.set_ylabel('Golden Dawn Vote Share')
+ax.set_title('Parallel Trends Assessment: Golden Dawn Support')
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+Prior to 2016, both groups follow similar trends, supporting the parallel trends assumption.
+
+### Question 7: Two-Way Fixed Effects Regression
+
+Estimate the DiD using municipality and year fixed effects. This controls for all time-invariant municipality characteristics and common time shocks:
+
+$$Y_{it} = \alpha_i + \gamma_t + \delta \cdot D_{it} + \varepsilon_{it}$$
+
+```{python}
+fe_model = smf.ols('gdvote ~ C(municipality) + C(year) + treatment', data=muni).fit()
+
+# Extract the treatment coefficient
+print(f'Treatment coefficient: {fe_model.params["treatment"]:.6f}')
+print(f'SE:                    {fe_model.bse["treatment"]:.6f}')
+print(f't-stat:                {fe_model.tvalues["treatment"]:.4f}')
+print(f'p-value:               {fe_model.pvalues["treatment"]:.4f}')
+```
+
+### Question 8: Continuous Treatment (Refugee Arrivals Per Capita)
+
+Replace the binary treatment with `trarrprop` (refugee arrivals per capita) to estimate the dose-response relationship.
+
+```{python}
+fe_model_cont = smf.ols('gdvote ~ C(municipality) + C(year) + trarrprop', data=muni).fit()
+
+print(f'trarrprop coefficient: {fe_model_cont.params["trarrprop"]:.6f}')
+print(f'SE:                    {fe_model_cont.bse["trarrprop"]:.6f}')
+print(f't-stat:                {fe_model_cont.tvalues["trarrprop"]:.4f}')
+print(f'p-value:               {fe_model_cont.pvalues["trarrprop"]:.4f}')
+```
+
+---
+
+## Part 2: Minimum Wages and Employment
+
+**Card, D. & Krueger, A.B. (1994).** *Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania.* American Economic Review, 84(4), 772-793.
+
+In April 1992, New Jersey raised its minimum wage from \$4.25 to \$5.05 while neighboring Pennsylvania did not. Card and Krueger surveyed fast-food restaurants in both states before and after the increase.
+
+### Question 2: DiD for Wages
+
+```{python}
+min_wage = pd.read_stata('../data/lab3/did_part2.dta')
+
+print(f'Shape: {min_wage.shape}')
+print(f'Columns: {list(min_wage.columns)}')
+min_wage.head()
+```
+
+```{python}
+def compute_did(df, var_pre, var_post, group_var):
+    """Compute manual DiD for wide-format data."""
+    pre_diff = df.loc[df[group_var] == 1, var_pre].mean(skipna=True) - df.loc[df[group_var] == 0, var_pre].mean(skipna=True)
+    post_diff = df.loc[df[group_var] == 1, var_post].mean(skipna=True) - df.loc[df[group_var] == 0, var_post].mean(skipna=True)
+    return pre_diff, post_diff, post_diff - pre_diff
+
+pre, post, did = compute_did(min_wage, 'wage_st', 'wage_st2', 'nj')
+print(f'=== Wages ===')
+print(f'Pre-treatment difference:  {pre:.4f}')
+print(f'Post-treatment difference: {post:.4f}')
+print(f'DiD estimate:              {did:.4f}')
+```
+
+The positive DiD for wages confirms the minimum wage increase was effective at raising wages in NJ relative to PA.
+
+### Question 3: DiD for Employment
+
+```{python}
+pre, post, did = compute_did(min_wage, 'emptot', 'emptot2', 'nj')
+print(f'=== Employment (FTE) ===')
+print(f'Pre-treatment difference:  {pre:.4f}')
+print(f'Post-treatment difference: {post:.4f}')
+print(f'DiD estimate:              {did:.4f}')
+print(f'\nContrary to standard economic theory, the minimum wage increase')
+print(f'did not reduce employment in NJ fast-food restaurants.')
+```
+
+### Question 4: DiD for Meal Prices
+
+```{python}
+pre, post, did = compute_did(min_wage, 'pmeal', 'pmeal2', 'nj')
+print(f'=== Meal Prices ===')
+print(f'Pre-treatment difference:  {pre:.4f}')
+print(f'Post-treatment difference: {post:.4f}')
+print(f'DiD estimate:              {did:.4f}')
+```
+
+### Question 5: DiD Regression in Long Format
+
+Reshape the data from wide to long format and estimate the DiD using OLS, with and without restaurant-level covariates.
+
+```{python}
+# Create pre-period and post-period DataFrames
+pre_df = min_wage[['nj', 'wage_st', 'emptot', 'kfc', 'wendys', 'co_owned']].copy()
+pre_df['treatment_period'] = 0
+
+post_df = min_wage[['nj', 'wage_st2', 'emptot2', 'kfc', 'wendys', 'co_owned']].copy()
+post_df.columns = ['nj', 'wage_st', 'emptot', 'kfc', 'wendys', 'co_owned']
+post_df['treatment_period'] = 1
+
+min_wage_long = pd.concat([pre_df, post_df], ignore_index=True)
+
+print(f'Long format shape: {min_wage_long.shape}')
+```
+
+```{python}
+# Simple DiD regression
+did_simple = smf.ols('emptot ~ nj * treatment_period', data=min_wage_long).fit()
+print('=== Simple DiD ===')
+print(did_simple.summary().tables[1])
+
+print()
+
+# Covariate-adjusted DiD
+did_cov = smf.ols('emptot ~ nj * treatment_period + kfc + wendys + co_owned', data=min_wage_long).fit()
+print('=== Covariate-Adjusted DiD ===')
+print(did_cov.summary().tables[1])
+```
