@@ -16,6 +16,17 @@ Applied causal inference techniques from an Economics Masters course (EC963), im
 | [Lab 5: Regression Discontinuity](lab5_regression_discontinuity.qmd) | Meyersson (2014) | Sharp RDD, bandwidth selection, local linear regression, LOESS |
 | [Midterm: COVID-19 Curfew Evaluation](midterm_covid_curfew_evaluation.qmd) | France's 2021 reinforced curfew policy | DiD, cross-sectional comparison, before-after analysis, RDD discussion |
 
+## Cheatsheets
+
+A companion reference series covering theory, formulas, and method selection guidance. Draws from Cunningham's *Causal Inference: The Mixtape*, Angrist & Pischke's *Mostly Harmless Econometrics*, and Facure Alves's *Causal Inference for the Brave and True*.
+
+| Cheatsheet | Topics |
+|-----------|--------|
+| [1: Theoretical Foundations](cheatsheet_01_foundations.qmd) | Potential outcomes, ATE/ATT/LATE, selection bias, SUTVA, DAGs, notation concordance |
+| [2: Core Methods](cheatsheet_02_core_methods.qmd) | RCTs, matching, propensity scores/IPW, DiD, IV/2SLS, RDD --- formulas, diagnostics, code |
+| [3: Advanced Methods](cheatsheet_03_advanced_methods.qmd) | Synthetic control, event studies, staggered DiD, doubly-robust estimation, sensitivity analysis, ML causal methods, modern frontiers |
+| [4: Decision Guide](cheatsheet_04_decision_guide.qmd) | Method selection flowchart, assumption matrix, common pitfalls, cross-lab index, formula card |
+
 ## Methods Overview
 
 - **Randomized Experiments**: The gold standard for causal inference. Random assignment ensures treatment and control groups are comparable in expectation.

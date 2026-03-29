@@ -1,0 +1,231 @@
+---
+title: "Cheatsheet 1: Theoretical Foundations"
+author: "Gavin Qu"
+---
+
+This cheatsheet lays out the theoretical spine of causal inference --- the concepts and language that every method in the toolkit builds on. It draws from Cunningham's *Causal Inference: The Mixtape*, Angrist & Pischke's *Mostly Harmless Econometrics*, and Facure Alves's *Causal Inference for the Brave and True*.
+
+## 1.1 The Fundamental Problem of Causal Inference
+
+### Potential Outcomes Framework (Rubin Causal Model)
+
+For each unit $i$ and binary treatment $D_i \in \{0,1\}$, define two **potential outcomes**:
+
+- $Y_{1i}$: the outcome unit $i$ would experience **if treated** ($D_i = 1$)
+- $Y_{0i}$: the outcome unit $i$ would experience **if not treated** ($D_i = 0$)
+
+The **observed outcome** is:
+
+$$
+Y_i = D_i \cdot Y_{1i} + (1 - D_i) \cdot Y_{0i}
+$$
+
+The **individual causal effect** is $\tau_i = Y_{1i} - Y_{0i}$.
+
+**The fundamental problem**: we only ever observe one potential outcome per unit. The counterfactual --- what *would have* happened --- is never directly observed. This is why causal inference requires assumptions beyond what the data alone can tell us.
+
+### Counterfactual Thinking
+
+Every causal claim implicitly involves a counterfactual: "What would have happened to this unit had its treatment status been different?" The entire field of causal inference is about constructing credible estimates of this unobserved counterfactual.
+
+## 1.2 Estimands: ATE, ATT, ATU, LATE
+
+Because we cannot compute individual effects $\tau_i$, we target **average** effects over populations or subpopulations.
+
+| Estimand | Definition | Interpretation |
+|----------|-----------|----------------|
+| **ATE** (Average Treatment Effect) | $\tau_{ATE} = E[Y_{1i} - Y_{0i}]$ | Average effect across the entire population |
+| **ATT** (Average Treatment Effect on the Treated) | $\tau_{ATT} = E[Y_{1i} - Y_{0i} \mid D_i = 1]$ | Average effect among those who actually received treatment |
+| **ATU** (Average Treatment Effect on the Untreated) | $\tau_{ATU} = E[Y_{1i} - Y_{0i} \mid D_i = 0]$ | Average effect among those who did not receive treatment |
+| **LATE** (Local Average Treatment Effect) | $\tau_{LATE} = E[Y_{1i} - Y_{0i} \mid \text{complier}]$ | Average effect among compliers (those whose treatment status is changed by the instrument) |
+
+**Key relationships:**
+
+$$
+\tau_{ATE} = P(D=1) \cdot \tau_{ATT} + P(D=0) \cdot \tau_{ATU}
+$$
+
+The ATE is a weighted average of ATT and ATU. When treatment effects are **heterogeneous** (vary across individuals), these estimands differ, and it matters which one your method identifies.
+
+### Which Methods Estimate Which?
+
+| Method | Estimand (typically) |
+|--------|---------------------|
+| RCT (random assignment) | ATE |
+| Matching / IPW | ATT (or ATE, depending on specification) |
+| Difference-in-Differences | ATT |
+| Instrumental Variables | LATE |
+| Regression Discontinuity | LATE (at the cutoff) |
+| Synthetic Control | ATT (for the treated unit) |
+
+## 1.3 Selection Bias Decomposition
+
+The naive comparison of treated vs. untreated outcomes is:
+
+$$
+E[Y_i \mid D_i = 1] - E[Y_i \mid D_i = 0]
+$$
+
+Decomposing using potential outcomes:
+
+$$
+\underbrace{E[Y_i \mid D_i = 1] - E[Y_i \mid D_i = 0]}_{\text{Observed difference}} = \underbrace{E[Y_{1i} - Y_{0i} \mid D_i = 1]}_{\text{ATT}} + \underbrace{E[Y_{0i} \mid D_i = 1] - E[Y_{0i} \mid D_i = 0]}_{\text{Selection Bias}}
+$$
+
+**Selection bias** arises when treated and untreated groups differ in their *baseline* potential outcomes $Y_{0i}$. In other words, the groups were different *even before* treatment.
+
+**Every causal method is a strategy for eliminating or minimizing this selection bias term:**
+
+- **RCTs** make $D_i$ independent of potential outcomes, so selection bias $= 0$ in expectation
+- **Matching / IPW** assume selection bias vanishes *conditional on observables*: $E[Y_{0i} \mid X_i, D_i=1] = E[Y_{0i} \mid X_i, D_i=0]$
+- **DiD** assumes selection bias is *constant over time* (parallel trends)
+- **IV** bypasses selection bias by using exogenous variation in $D_i$
+- **RDD** assumes selection bias is *continuous* at the cutoff, so it cancels in the limit
+
+## 1.4 SUTVA and Interference
+
+The **Stable Unit Treatment Value Assumption (SUTVA)** has two components:
+
+1. **No interference**: Unit $i$'s outcome depends only on its own treatment status, not on the treatment status of other units. Formally: $Y_i(D_1, D_2, \ldots, D_N) = Y_i(D_i)$.
+
+2. **No hidden variations of treatment**: There is only one version of "treatment." If treated units receive different doses, intensities, or types, SUTVA is violated.
+
+### When SUTVA Fails
+
+| Violation | Example | Consequence |
+|-----------|---------|-------------|
+| Spillovers | Vaccinating one person protects their neighbors | Treatment effect is not well-defined for a single unit |
+| General equilibrium | Job training for everyone changes the labor market | Partial-equilibrium estimates overstate the effect at scale |
+| Multiple treatment versions | "Treated" schools implement the program differently | The ATE conflates different interventions |
+
+SUTVA is **assumed by default** in all the standard methods. When it fails, you need specialized tools (e.g., exposure mapping, partial identification).
+
+## 1.5 DAGs and Causal Graphs
+
+Directed Acyclic Graphs (DAGs) provide a nonparametric language for encoding causal assumptions. They complement the potential outcomes framework by making identification strategies visual and testable.
+
+### Core Concepts
+
+**Nodes** represent variables. **Directed edges** ($\rightarrow$) represent direct causal effects. "Acyclic" means no variable causes itself through any path.
+
+### Three Fundamental Structures
+
+**1. Chain (Mediation):** $X \rightarrow M \rightarrow Y$
+
+- $X$ affects $Y$ through mediator $M$
+- Conditioning on $M$ **blocks** the path from $X$ to $Y$
+
+**2. Fork (Confounding):** $X \leftarrow C \rightarrow Y$
+
+- Common cause $C$ creates a spurious association between $X$ and $Y$
+- Conditioning on $C$ **blocks** the spurious path (removes confounding)
+
+**3. Collider:** $X \rightarrow C \leftarrow Y$
+
+- $X$ and $Y$ both cause $C$
+- This path is **blocked by default**
+- Conditioning on $C$ **opens** the path (creates **collider bias** / **selection bias**)
+
+### The Backdoor Criterion
+
+A set of variables $\mathbf{Z}$ satisfies the backdoor criterion relative to $(D, Y)$ if:
+
+1. No variable in $\mathbf{Z}$ is a descendant of $D$
+2. $\mathbf{Z}$ blocks every path between $D$ and $Y$ that contains an arrow **into** $D$
+
+If the backdoor criterion is satisfied, the causal effect is identified by:
+
+$$
+E[Y \mid do(D=d)] = \sum_z E[Y \mid D=d, Z=z] \cdot P(Z=z)
+$$
+
+This is the theoretical justification for controlling for confounders in regression, matching, and IPW.
+
+### The Frontdoor Criterion
+
+When you **cannot** observe confounders directly but can observe a mediator $M$ such that:
+
+1. $D$ blocks all backdoor paths from $D$ to $M$
+2. There are no unblocked backdoor paths from $M$ to $Y$ (after conditioning on $D$)
+
+Then the causal effect can still be identified through $M$. This is less commonly used in practice but conceptually important.
+
+### Common DAG Pitfalls
+
+**Bad control (over-conditioning):** Conditioning on a variable that is a **descendant of treatment** can introduce bias. For example, if $D \rightarrow M \rightarrow Y$ and you control for $M$, you block the causal pathway you're trying to estimate.
+
+**Collider bias (under-conditioning):** Conditioning on a common effect of $D$ and $Y$ (or their causes) opens a spurious path. Classic example: conditioning on "employed" when studying the effect of education on ability (both cause employment).
+
+```{python}
+#| code-fold: true
+#| fig-cap: "The three fundamental DAG structures"
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 3.5))
+
+def draw_dag(ax, nodes, edges, title):
+    pos = {}
+    for name, (x, y) in nodes.items():
+        pos[name] = (x, y)
+        ax.annotate(name, (x, y), fontsize=14, ha='center', va='center',
+                    bbox=dict(boxstyle='round,pad=0.4', facecolor='lightblue', edgecolor='black'))
+    for (start, end) in edges:
+        x0, y0 = pos[start]
+        x1, y1 = pos[end]
+        ax.annotate('', xy=(x1, y1), xytext=(x0, y0),
+                    arrowprops=dict(arrowstyle='->', lw=1.5, color='black'))
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.set_xlim(-0.5, 2.5)
+    ax.set_ylim(-0.5, 1.5)
+    ax.axis('off')
+
+# Chain
+draw_dag(axes[0],
+         {'X': (0, 0.5), 'M': (1, 0.5), 'Y': (2, 0.5)},
+         [('X', 'M'), ('M', 'Y')],
+         'Chain (Mediation)')
+
+# Fork
+draw_dag(axes[1],
+         {'X': (0, 0), 'C': (1, 1), 'Y': (2, 0)},
+         [('C', 'X'), ('C', 'Y')],
+         'Fork (Confounding)')
+
+# Collider
+draw_dag(axes[2],
+         {'X': (0, 1), 'C': (1, 0), 'Y': (2, 1)},
+         [('X', 'C'), ('Y', 'C')],
+         'Collider')
+
+plt.tight_layout()
+plt.show()
+```
+
+## 1.6 Notation Concordance
+
+The three source textbooks use slightly different notation. This cheatsheet standardizes on **Angrist & Pischke notation** throughout.
+
+| Concept | This Cheatsheet | Cunningham (*Mixtape*) | Angrist & Pischke (*MHE*) | Facure (*Brave and True*) |
+|---------|----------------|----------------------|--------------------------|--------------------------|
+| Potential outcome (treated) | $Y_{1i}$ | $Y_i^1$ or $Y_i(1)$ | $Y_{1i}$ | $Y_1$ or $Y^1$ |
+| Potential outcome (control) | $Y_{0i}$ | $Y_i^0$ or $Y_i(0)$ | $Y_{0i}$ | $Y_0$ or $Y^0$ |
+| Treatment indicator | $D_i$ | $D_i$ | $D_i$ | $T$ or $T_i$ |
+| Observed outcome | $Y_i$ | $Y_i$ | $Y_i$ | $Y$ or $Y_i$ |
+| Covariates | $X_i$ | $X_i$ | $X_i$ | $X$ or $X_i$ |
+| Instrument | $Z_i$ | $Z_i$ | $Z_i$ | $Z$ or $Z_i$ |
+| Propensity score | $e(X_i) = P(D_i=1 \mid X_i)$ | $p(X)$ | $P[D_i=1 \mid X_i]$ | $e(x)$ or $P(T=1 \mid X)$ |
+| Running variable (RDD) | $R_i$ | $X_i$ (context-dependent) | $x_i$ or $X_i$ | $R$ |
+
+## 1.7 Master Assumptions Table
+
+| Method | Identifying Assumption | Estimand | Key Formula | Primary Threats |
+|--------|----------------------|----------|-------------|-----------------|
+| **RCT** | Random assignment: $D_i \perp\!\!\!\perp (Y_{1i}, Y_{0i})$ | ATE | $\hat\tau = \bar{Y}_T - \bar{Y}_C$ | Non-compliance, attrition, spillovers |
+| **Matching** | Conditional independence (CIA): $(Y_{1i}, Y_{0i}) \perp\!\!\!\perp D_i \mid X_i$ + overlap | ATT | Pair treated with similar untreated on $X_i$ | Unobserved confounders, curse of dimensionality |
+| **IPW** | CIA + overlap (same as matching) | ATE or ATT | $\hat\tau = \frac{1}{n}\sum\left[\frac{D_i Y_i}{\hat{e}(X_i)} - \frac{(1-D_i)Y_i}{1-\hat{e}(X_i)}\right]$ | Misspecified propensity model, extreme weights |
+| **DiD** | Parallel trends: $E[Y_{0i,t} - Y_{0i,t-1} \mid D=1] = E[Y_{0i,t} - Y_{0i,t-1} \mid D=0]$ | ATT | $\hat\tau = (\bar{Y}_{T,post} - \bar{Y}_{T,pre}) - (\bar{Y}_{C,post} - \bar{Y}_{C,pre})$ | Differential trends, anticipation effects, compositional changes |
+| **IV** | Relevance: $Cov(Z_i, D_i) \neq 0$; Exclusion: $Z_i$ affects $Y_i$ only through $D_i$; Monotonicity | LATE | $\hat\tau_{IV} = \frac{Cov(Y_i, Z_i)}{Cov(D_i, Z_i)}$ | Weak instruments, exclusion restriction violations |
+| **RDD** | Continuity: $E[Y_{0i} \mid R_i = c]$ and $E[Y_{1i} \mid R_i = c]$ are continuous at cutoff $c$ | LATE (at $c$) | $\hat\tau = \lim_{r \downarrow c} E[Y_i \mid R_i = r] - \lim_{r \uparrow c} E[Y_i \mid R_i = r]$ | Manipulation of running variable, discontinuities in covariates |
+| **Synthetic Control** | Weighted combination of donors replicates treated unit's counterfactual trajectory | ATT (single unit) | $\hat\tau_t = Y_{1t} - \sum_j w_j^* Y_{jt}$ | Poor pre-treatment fit, donor pool contamination |
+| **Doubly Robust (AIPW)** | CIA + overlap (consistent if *either* outcome model or propensity model is correct) | ATE | See Cheatsheet 3, Section 3.4 | Both models misspecified |

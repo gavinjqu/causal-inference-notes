@@ -1,0 +1,473 @@
+---
+title: "Cheatsheet 3: Advanced Methods"
+author: "Gavin Qu"
+---
+
+This cheatsheet covers methods beyond the core toolkit: synthetic control, event studies, staggered DiD and its modern fixes, doubly-robust estimation, sensitivity analysis, ML-based causal inference, and pointers to the research frontier.
+
+```{python}
+#| code-fold: true
+#| echo: false
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from scipy import optimize
+np.random.seed(42)
+```
+
+## 3.1 Synthetic Control Method
+
+**When to use:** A single (or small number of) treated unit(s) is affected by a policy or event, and you have a panel of untreated "donor" units observed over the same time period. Classic setting: one state adopts a policy, other states serve as donors.
+
+**Reference:** Abadie, Diamond & Hainmueller (2010, 2015); Cunningham Ch.10; Facure Ch.18.
+
+### Framework
+
+Let unit $j=1$ be the treated unit, and $j = 2, \ldots, J+1$ be the donor pool. We observe $T$ periods, with treatment occurring at period $T_0 + 1$.
+
+The synthetic control constructs **convex weights** $w_2^*, \ldots, w_{J+1}^*$ that minimize the distance between the treated unit and the weighted donor combination in the **pre-treatment** period:
+
+$$
+\min_{w_2, \ldots, w_{J+1}} \sum_{t=1}^{T_0} \left(Y_{1t} - \sum_{j=2}^{J+1} w_j Y_{jt}\right)^2
+$$
+
+subject to $w_j \geq 0$ for all $j$ and $\sum_j w_j = 1$.
+
+The **treatment effect** estimate at each post-treatment period $t > T_0$:
+
+$$
+\hat\tau_t = Y_{1t} - \sum_{j=2}^{J+1} w_j^* Y_{jt} = Y_{1t} - \hat{Y}_{1t}^{SC}
+$$
+
+### Inference via Placebo Tests
+
+Since we have only one treated unit, standard inference doesn't apply. Instead:
+
+1. **In-space placebos:** Apply the synthetic control procedure to each **donor** unit (pretending it was treated). Compute the treatment effect "gap" for each placebo.
+2. Compute the **MSPE ratio** for each unit: $\frac{\text{Post-treatment MSPE}}{\text{Pre-treatment MSPE}}$
+3. The $p$-value is the rank of the treated unit's MSPE ratio among all units.
+
+If the pre-treatment fit is poor for a placebo unit, its large post-treatment gap is not meaningful --- the MSPE ratio accounts for this.
+
+### Key Diagnostics
+
+- **Pre-treatment fit:** The synthetic control should closely track the treated unit before treatment. Poor fit $\Rightarrow$ unreliable post-treatment estimates.
+- **Weight distribution:** If weights are concentrated on a single donor, the "synthetic" control is essentially just one unit. Check whether this is sensible.
+- **Donor pool selection:** Exclude units that experienced similar shocks or policy changes.
+
+```{python}
+# Synthetic control: worked example with synthetic data
+np.random.seed(42)
+T, J = 20, 5       # 20 periods, 5 donors
+T0 = 12            # treatment starts at period 13
+tau_true = 3.0      # true treatment effect
+
+# Generate donor outcomes (common factor model)
+factor = np.cumsum(np.random.randn(T) * 0.5) + 10
+loadings = np.random.uniform(0.8, 1.2, J)
+donors = np.outer(factor, loadings) + np.random.randn(T, J) * 0.3
+
+# Treated unit: weighted combination of donors + treatment effect after T0
+true_weights = np.array([0.4, 0.3, 0.2, 0.1, 0.0])
+treated = donors @ true_weights + np.random.randn(T) * 0.3
+treated[T0:] += tau_true
+
+# Estimate synthetic control weights
+Y_pre_treated = treated[:T0]
+Y_pre_donors = donors[:T0]
+
+def objective(w):
+    return np.sum((Y_pre_treated - Y_pre_donors @ w) ** 2)
+
+constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+bounds = [(0, 1)] * J
+result = optimize.minimize(objective, np.ones(J) / J, bounds=bounds, constraints=constraints)
+w_star = result.x
+
+# Compute synthetic control and treatment effect
+Y_sc = donors @ w_star
+gaps = treated - Y_sc
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+# Panel A: Treated vs Synthetic
+axes[0].plot(range(T), treated, 'b-o', markersize=4, label='Treated unit')
+axes[0].plot(range(T), Y_sc, 'r--s', markersize=4, label='Synthetic control')
+axes[0].axvline(T0 - 0.5, color='gray', linestyle=':', label='Treatment onset')
+axes[0].set_xlabel('Period')
+axes[0].set_ylabel('Outcome')
+axes[0].set_title('Treated vs. Synthetic Control')
+axes[0].legend()
+# Panel B: Gap
+axes[1].plot(range(T), gaps, 'k-o', markersize=4)
+axes[1].axhline(0, color='gray', linestyle=':')
+axes[1].axvline(T0 - 0.5, color='gray', linestyle=':')
+axes[1].set_xlabel('Period')
+axes[1].set_ylabel('Gap (Treated − Synthetic)')
+axes[1].set_title(f'Estimated gap (true τ = {tau_true})')
+plt.tight_layout()
+plt.show()
+
+print(f"Estimated weights: {np.round(w_star, 3)}")
+print(f"True weights:      {true_weights}")
+print(f"Mean post-treatment gap: {gaps[T0:].mean():.3f}")
+```
+
+---
+
+## 3.2 Event Studies and Dynamic DiD
+
+**When to use:** You want to (a) test the parallel trends assumption visually, and (b) trace out the dynamic path of treatment effects over time.
+
+**Reference:** Cunningham Ch.9; Facure Ch.15.
+
+### The Event-Study Specification
+
+With unit $i$ and time $t$, define **relative time** $k = t - t_i^*$ where $t_i^*$ is unit $i$'s treatment date. The event-study regression:
+
+$$
+Y_{it} = \alpha_i + \lambda_t + \sum_{k \neq -1} \beta_k \cdot \mathbf{1}(t - t_i^* = k) + \varepsilon_{it}
+$$
+
+- $\alpha_i$: unit fixed effects
+- $\lambda_t$: time fixed effects
+- $k = -1$ is the **reference period** (normalized to zero)
+- $\beta_k$ for $k < 0$: **leads** (pre-treatment) --- should be near zero if parallel trends holds
+- $\beta_k$ for $k \geq 0$: **lags** (post-treatment) --- the dynamic treatment effects
+
+### Interpreting the Event-Study Plot
+
+- **Pre-trend coefficients** ($\beta_{-2}, \beta_{-3}, \ldots$) clustered around zero $\Rightarrow$ evidence *consistent with* parallel trends (not proof)
+- **Increasing pre-trend coefficients** $\Rightarrow$ trends are diverging before treatment; DiD may be invalid
+- **Post-treatment coefficients** show how the effect builds or fades over time
+
+**Warning:** Pre-trend tests have low power. Failing to reject parallel trends $\neq$ parallel trends holds.
+
+```{python}
+# Event study simulation
+np.random.seed(42)
+n_units, n_periods = 50, 15
+treat_time = 8  # treatment at period 8
+
+# Panel data
+unit_fe = np.random.randn(n_units) * 2
+time_fe = np.linspace(0, 3, n_periods)
+treated_units = np.arange(n_units // 2, n_units)
+
+Y = np.zeros((n_units, n_periods))
+for i in range(n_units):
+    for t in range(n_periods):
+        effect = 0
+        if i in treated_units and t >= treat_time:
+            effect = 2.0 * (1 - 0.7 ** (t - treat_time + 1))  # gradual effect
+        Y[i, t] = unit_fe[i] + time_fe[t] + effect + np.random.randn() * 0.5
+
+# Estimate event-study coefficients via demeaning
+rows = []
+for i in range(n_units):
+    for t in range(n_periods):
+        rel_time = t - treat_time if i in treated_units else None
+        rows.append({'unit': i, 'time': t, 'Y': Y[i, t],
+                     'treated': i in treated_units, 'rel_time': rel_time})
+df = pd.DataFrame(rows)
+
+# For treated units, create relative time dummies
+df_treated = df[df['treated']].copy()
+df_control = df[~df['treated']].copy()
+
+# Simple event study: for each relative time k, compute DiD vs control
+betas, ses = [], []
+rel_times = range(-treat_time, n_periods - treat_time)
+for k in rel_times:
+    t = treat_time + k
+    if t < 0 or t >= n_periods:
+        betas.append(np.nan)
+        ses.append(np.nan)
+        continue
+    # Reference period k=-1
+    ref_t = treat_time - 1
+    did_k = ((Y[treated_units, t].mean() - Y[treated_units, ref_t].mean()) -
+             (Y[:n_units // 2, t].mean() - Y[:n_units // 2, ref_t].mean()))
+    betas.append(did_k)
+    ses.append(0.3)  # simplified SE for illustration
+
+rel_times = list(rel_times)
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.errorbar(rel_times, betas, yerr=[1.96 * s for s in ses],
+            fmt='o-', capsize=3, markersize=5, color='steelblue')
+ax.axhline(0, color='gray', linestyle=':')
+ax.axvline(-0.5, color='red', linestyle='--', alpha=0.5, label='Treatment onset')
+ax.set_xlabel('Relative time (k)')
+ax.set_ylabel('Estimated β_k')
+ax.set_title('Event Study Plot')
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+---
+
+## 3.3 Staggered DiD and Modern Extensions
+
+**The problem:** When treatment is adopted at **different times** by different units, the standard TWFE estimator ($Y_{it} = \alpha_i + \lambda_t + \tau D_{it} + \varepsilon_{it}$) does not recover a simple weighted average of treatment effects. It can produce **negative weights** on some unit-time treatment effects, potentially yielding a biased or even wrong-signed estimate.
+
+### Goodman-Bacon Decomposition (2021)
+
+The TWFE $\hat\tau$ is a weighted average of all possible 2×2 DiD comparisons:
+
+$$
+\hat\tau_{TWFE} = \sum_{k} \sum_{\ell \neq k} s_{k\ell} \cdot \hat\tau_{k\ell}^{2\times2}
+$$
+
+where $\hat\tau_{k\ell}^{2\times2}$ compares timing group $k$ (treated) to group $\ell$ (control or already-treated), and $s_{k\ell}$ are weights that depend on group size and variance.
+
+**The problem:** Some comparisons use **already-treated** units as controls. If treatment effects are dynamic (change over time), this introduces bias. The weights $s_{k\ell}$ can even be **negative**.
+
+**Diagnostic:** Decompose $\hat\tau_{TWFE}$ into its component 2×2 comparisons and inspect the weights. If many weights are negative or if already-treated comparisons dominate, TWFE is unreliable.
+
+### Modern Estimators
+
+These estimators all avoid the "negative weights" problem by restricting which comparisons are made:
+
+#### Callaway & Sant'Anna (2021): Group-Time ATTs
+
+- Define **cohorts** by treatment timing: group $g$ = all units first treated at time $g$
+- Estimate cohort-time effects $ATT(g, t)$ using only **not-yet-treated** (or never-treated) units as controls
+- Aggregate $ATT(g, t)$ into summary measures (overall, dynamic/event-study, group-specific)
+- Allows for covariate adjustment via outcome regression, IPW, or doubly-robust methods
+
+#### Sun & Abraham (2021): Interaction-Weighted Estimator
+
+- Saturate the regression with cohort $\times$ relative-time interactions:
+$$
+Y_{it} = \alpha_i + \lambda_t + \sum_g \sum_{k \neq -1} \beta_{g,k} \cdot \mathbf{1}(G_i = g) \cdot \mathbf{1}(t - g = k) + \varepsilon_{it}
+$$
+- Then aggregate $\hat\beta_{g,k}$ using cohort shares as weights
+- Key insight: the fully-interacted model avoids contamination from other cohorts
+
+#### de Chaisemartin & D'Haultfoeuille (2020)
+
+- Propose an estimator for the **instantaneous** treatment effect that only compares "switchers" (units whose treatment status changes at time $t$) to units whose status doesn't change
+- Particularly useful when treatment can turn on **and** off
+
+#### Borusyak, Jaravel & Spiess (2024): Imputation Estimator
+
+- **Step 1:** Estimate the unit and time fixed effects using only **untreated** observations
+- **Step 2:** Impute counterfactual $\hat{Y}_{it}(0)$ for treated observations
+- **Step 3:** Treatment effect = $Y_{it} - \hat{Y}_{it}(0)$
+- Efficient under homoskedasticity; naturally handles unbalanced panels
+
+### When to Worry About Staggered Treatment
+
+You should use these modern estimators (instead of plain TWFE) when:
+
+- Units adopt treatment at **different times**
+- You suspect treatment effects are **dynamic** (grow or fade over time)
+- You suspect treatment effects are **heterogeneous** across cohorts
+
+If all units are treated at the **same time** (classic 2×2 DiD), TWFE is fine.
+
+---
+
+## 3.4 Doubly-Robust Estimation (AIPW)
+
+**When to use:** Same setting as matching/IPW (CIA holds), but you want protection against model misspecification.
+
+**Reference:** Facure Ch.13; Cunningham Ch.5.
+
+### The Augmented IPW (AIPW) Estimator
+
+$$
+\hat\tau_{DR} = \frac{1}{n}\sum_{i=1}^{n}\left[\hat\mu_1(X_i) - \hat\mu_0(X_i) + \frac{D_i(Y_i - \hat\mu_1(X_i))}{\hat{e}(X_i)} - \frac{(1-D_i)(Y_i - \hat\mu_0(X_i))}{1-\hat{e}(X_i)}\right]
+$$
+
+where:
+
+- $\hat\mu_d(X_i) = \hat{E}[Y_i \mid X_i, D_i = d]$: outcome model (regression of $Y$ on $X$ separately for $D=0$ and $D=1$)
+- $\hat{e}(X_i) = \hat{P}(D_i = 1 \mid X_i)$: propensity score model
+
+### Why "Doubly Robust"?
+
+The estimator is **consistent** if **either** the outcome model $\hat\mu$ or the propensity score model $\hat{e}$ is correctly specified (but not necessarily both). You get two chances to get it right.
+
+**Intuition:** The first two terms ($\hat\mu_1 - \hat\mu_0$) give the regression-based estimate. The remaining IPW terms correct the regression estimate for any bias due to misspecification.
+
+### Connection to Semiparametric Efficiency
+
+AIPW achieves the **semiparametric efficiency bound** --- it has the smallest asymptotic variance among all regular estimators that are consistent under CIA + overlap. This makes it the gold standard for observational studies when you're willing to model both the outcome and the propensity score.
+
+```{python}
+# Doubly-robust estimation
+from sklearn.linear_model import LogisticRegression, LinearRegression
+
+n = 1000
+X = np.random.randn(n, 3)
+e_true = 1 / (1 + np.exp(-(X[:, 0] + 0.5 * X[:, 1])))
+D = np.random.binomial(1, e_true)
+Y = 3 * D + X[:, 0] ** 2 + X[:, 1] + np.random.randn(n)  # true ATE = 3, nonlinear outcome
+
+# Estimate propensity score
+ps = LogisticRegression().fit(X, D)
+e_hat = ps.predict_proba(X)[:, 1]
+e_hat = np.clip(e_hat, 0.02, 0.98)
+
+# Estimate outcome models
+mu1 = LinearRegression().fit(X[D == 1], Y[D == 1])
+mu0 = LinearRegression().fit(X[D == 0], Y[D == 0])
+mu1_hat = mu1.predict(X)
+mu0_hat = mu0.predict(X)
+
+# AIPW
+aipw = np.mean(
+    mu1_hat - mu0_hat
+    + D * (Y - mu1_hat) / e_hat
+    - (1 - D) * (Y - mu0_hat) / (1 - e_hat)
+)
+
+# Compare with naive methods
+ipw = np.mean(D * Y / e_hat - (1 - D) * Y / (1 - e_hat))
+reg = np.mean(mu1_hat - mu0_hat)
+
+print(f"Regression only:  {reg:.3f}")
+print(f"IPW only:         {ipw:.3f}")
+print(f"Doubly-robust:    {aipw:.3f}")
+print(f"True ATE:         3.000")
+```
+
+---
+
+## 3.5 Sensitivity Analysis
+
+**When to use:** Always. Every observational study should assess how robust its findings are to potential violations of the identifying assumptions (especially unobserved confounding).
+
+### Oster's Method (2019): Coefficient Stability
+
+If adding **observed** controls barely moves the treatment coefficient, perhaps adding **unobserved** controls wouldn't move it much either.
+
+Define:
+
+- $\hat\tau^{short}$: coefficient from the short regression (no controls)
+- $\hat\tau^{long}$: coefficient from the long regression (with controls)
+- $R_{short}^2$, $R_{long}^2$: corresponding $R^2$ values
+- $R_{max}$: hypothetical $R^2$ if all confounders (observed + unobserved) were included
+
+The **bias-adjusted** treatment effect under proportional selection ($\delta = 1$):
+
+$$
+\hat\tau^* = \hat\tau^{long} - (\hat\tau^{short} - \hat\tau^{long}) \cdot \frac{R_{max} - R_{long}^2}{R_{long}^2 - R_{short}^2}
+$$
+
+**Interpretation:** If $\hat\tau^*$ retains the same sign as $\hat\tau^{long}$ for $R_{max} \leq 1$ and $\delta = 1$, the result is robust to proportional selection on unobservables.
+
+### Rosenbaum Bounds
+
+For matched studies, Rosenbaum bounds ask: *How large would a hidden bias $\Gamma$ need to be to change the qualitative conclusion?*
+
+If two units with identical $X$ have treatment odds that differ by at most $\Gamma$:
+
+$$
+\frac{1}{\Gamma} \leq \frac{P(D_i = 1 \mid X_i) / P(D_i = 0 \mid X_i)}{P(D_j = 1 \mid X_j) / P(D_j = 0 \mid X_j)} \leq \Gamma
+$$
+
+At $\Gamma = 1$, there is no hidden bias (random assignment conditional on $X$). Increase $\Gamma$ until the test conclusion changes. Higher $\Gamma$ at the tipping point $\Rightarrow$ more robust.
+
+### Omitted Variable Bias Formula
+
+For OLS, if the true model is $Y = X\beta + D\tau + W\gamma + \varepsilon$ but $W$ is omitted:
+
+$$
+\text{Bias}(\hat\tau) = \hat\delta_{DW} \cdot \gamma
+$$
+
+where $\hat\delta_{DW}$ is the coefficient from regressing $D$ on $W$ (conditional on $X$). The bias is large when the omitted variable is (a) strongly related to the outcome ($\gamma$ large) **and** (b) strongly related to treatment ($\delta_{DW}$ large).
+
+---
+
+## 3.6 ML-Based Causal Methods (Overview)
+
+Machine learning can improve causal inference by providing **flexible estimation** of nuisance parameters (propensity scores, outcome models) and by enabling **heterogeneous treatment effect** estimation.
+
+### Double/Debiased Machine Learning (Chernozhukov et al. 2018)
+
+**Problem:** If you use ML to estimate nuisance parameters and plug them directly into a causal estimator, regularization bias can contaminate the causal estimate.
+
+**Solution:** Use **cross-fitting** (sample splitting):
+
+1. Split sample into $K$ folds
+2. For each fold $k$, estimate nuisance parameters ($\hat{e}$, $\hat\mu$) using all *other* folds
+3. Compute the causal estimate using fold $k$'s data with the out-of-fold nuisance estimates
+4. Average across folds
+
+This eliminates overfitting bias while allowing arbitrary ML methods for nuisance estimation.
+
+### Causal Forests (Wager & Athey 2018)
+
+**Goal:** Estimate **conditional average treatment effects** (CATE): $\tau(x) = E[Y_{1i} - Y_{0i} \mid X_i = x]$.
+
+**Approach:**
+
+- Modified random forest that splits to maximize heterogeneity in treatment effects (not prediction accuracy)
+- **Honest estimation:** One subsample determines the tree structure, another estimates leaf-level effects
+- Provides pointwise confidence intervals for $\hat\tau(x)$
+
+**When to use:** When you suspect treatment effects vary with $X$ and want a data-driven way to discover the heterogeneity.
+
+### Key Takeaway
+
+ML is a tool for *nuisance parameter estimation* and *effect heterogeneity discovery*, not a replacement for identification. You still need a credible identification strategy (RCT, DiD, IV, etc.) --- ML helps you estimate the components more flexibly.
+
+**For more depth:** Facure Ch.21-22; `econml` documentation (Microsoft); `doubleml` package.
+
+---
+
+## 3.7 Further Reading and Modern Frontiers
+
+Brief pointers to active research areas for further self-study. Each entry provides the core idea and a key reference.
+
+### Bunching Estimation
+
+Units that can manipulate a continuous assignment variable "bunch" at kink points or notches in tax/benefit schedules. The excess mass at the kink identifies a behavioral elasticity. Primarily used in public finance.
+
+**Key reference:** Kleven (2016), "Bunching," *Annual Review of Economics*.
+
+### Regression Kink Design (RKD)
+
+When the *slope* (not level) of a policy variable changes at a threshold, the causal effect is identified by the change in slope of the outcome at the kink. A derivative analog of RDD.
+
+**Key reference:** Card, Lee, Pei & Weber (2015), "Inference on Causal Effects in a Generalized Regression Kink Design," *Econometrica*.
+
+### Shift-Share (Bartik) Instruments
+
+Instruments of the form $B_i = \sum_k s_{ik} g_k$, where $s_{ik}$ are local shares (e.g., industry employment shares) and $g_k$ are aggregate shocks (e.g., national industry growth). Widely used in labor and trade economics.
+
+**Key references:** Goldsmith-Pinkham, Sorkin & Swift (2020), "Bartik Instruments: What, When, Why, and How," *AER*; Borusyak, Hull & Jaravel (2022), "Quasi-Experimental Shift-Share Research Designs," *RES*.
+
+### Synthetic Difference-in-Differences
+
+Combines synthetic control (reweight units) with DiD (difference out time trends). Relaxes the requirement that the synthetic control perfectly matches the treated unit in pre-treatment levels --- only needs to match in **trends**.
+
+**Key reference:** Arkhangelsky, Athey, Hirshberg, Imbens & Wager (2021), "Synthetic Difference-in-Differences," *AER*.
+
+### Matrix Completion for Panel Data
+
+Treats the counterfactual outcome matrix as a low-rank matrix with missing entries (the treated cells). Uses nuclear norm minimization or related methods to impute the counterfactual. Generalizes both synthetic control and interactive fixed effects.
+
+**Key reference:** Athey, Bayati, Doudchenko, Imbens & Khosravi (2021), "Matrix Completion Methods for Causal Panel Data Models," *JASA*.
+
+### Interference and Spillovers
+
+When SUTVA fails, treatment effects depend on the treatment status of connected units. Requires modeling an **exposure mapping** that defines how a unit's outcome depends on its own treatment and the treatment of its neighbors (in a network, spatial, or temporal sense).
+
+**Key reference:** Aronow & Samii (2017), "Estimating Average Causal Effects Under General Interference," *Annals of Applied Statistics*.
+
+### Partial Identification and Bounds
+
+When point identification fails (e.g., the exclusion restriction is only approximately valid), you can still derive **bounds** on the causal effect. Manski's framework provides sharp bounds under minimal assumptions.
+
+**Key reference:** Manski (2003), *Partial Identification of Probability Distributions*, Springer.
+
+### Marginal Treatment Effects (MTE)
+
+The MTE framework unifies IV, LATE, ATT, ATE, and policy-relevant treatment effects (PRTE) as different weighted averages of the marginal treatment effect function $MTE(x, u) = E[Y_1 - Y_0 \mid X = x, U_D = u]$, where $U_D$ reflects unobserved resistance to treatment. Connects the selection model tradition (Heckman) with the LATE framework (Imbens-Angrist).
+
+**Key reference:** Heckman & Vytlacil (2005), "Structural Equations, Treatment Effects, and Econometric Policy Evaluation," *Econometrica*.

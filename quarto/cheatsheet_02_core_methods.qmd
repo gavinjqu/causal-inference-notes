@@ -1,0 +1,439 @@
+---
+title: "Cheatsheet 2: Core Methods Quick Reference"
+author: "Gavin Qu"
+---
+
+A concise reference for the six core causal inference methods. Each section follows a consistent template: **when to use**, **identifying assumption**, **estimand**, **key formula**, **diagnostics**, **Python snippet**, and **cross-reference** to the corresponding lab.
+
+```{python}
+#| code-fold: true
+#| echo: false
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+from scipy import stats
+np.random.seed(42)
+```
+
+## 2.1 Randomized Experiments
+
+**When to use:** You have (or can credibly argue for) random assignment of treatment.
+
+**Identifying assumption:** Independence: $D_i \perp\!\!\!\perp (Y_{1i}, Y_{0i})$. Random assignment ensures treated and control groups are comparable in expectation.
+
+**Estimand:** ATE
+
+**Key formulas:**
+
+*Difference in means:*
+$$
+\hat\tau = \bar{Y}_T - \bar{Y}_C = \frac{1}{n_T}\sum_{i: D_i=1} Y_i - \frac{1}{n_C}\sum_{i: D_i=0} Y_i
+$$
+
+*Standard error:*
+$$
+SE(\hat\tau) = \sqrt{\frac{s_T^2}{n_T} + \frac{s_C^2}{n_C}}
+$$
+
+*OLS equivalence:* Regressing $Y_i = \alpha + \tau D_i + \varepsilon_i$ recovers the same $\hat\tau$ as the difference in means. Adding covariates $X_i$ can improve precision without changing the point estimate (in expectation).
+
+**Diagnostics:**
+
+- **Balance checks:** Compare means of pre-treatment covariates across groups ($t$-tests or normalized differences). Significant imbalance suggests randomization failure.
+- **Attrition analysis:** Check whether dropout rates differ by treatment status.
+- **Compliance:** If some treated don't comply (or controls get treated), the difference in means estimates the **ITT** (intent-to-treat), not the ATE on compliers.
+
+### Randomization Inference (Fisher)
+
+An alternative to large-sample $t$-tests. Under the **sharp null** $H_0: Y_{1i} = Y_{0i}$ for all $i$:
+
+1. Compute the observed test statistic $T_{obs}$ (e.g., difference in means)
+2. For each possible (or many random) re-assignments of treatment, recompute $T$
+3. The $p$-value is the fraction of permutations where $|T| \geq |T_{obs}|$
+
+This is **exact** (valid in finite samples) and does not require distributional assumptions.
+
+```{python}
+# Randomization inference example
+n = 200
+D = np.random.binomial(1, 0.5, n)
+Y = 2 * D + np.random.normal(0, 1, n)  # true effect = 2
+
+# Observed statistic
+t_obs = Y[D == 1].mean() - Y[D == 0].mean()
+
+# Permutation distribution
+n_perms = 5000
+t_perms = np.zeros(n_perms)
+for j in range(n_perms):
+    D_perm = np.random.permutation(D)
+    t_perms[j] = Y[D_perm == 1].mean() - Y[D_perm == 0].mean()
+
+p_value = np.mean(np.abs(t_perms) >= np.abs(t_obs))
+print(f"Observed diff-in-means: {t_obs:.3f}")
+print(f"Randomization inference p-value: {p_value:.4f}")
+```
+
+**See also:** Lab 1 (Chattopadhyay & Duflo 2004; Gerber, Green & Larimer 2008)
+
+---
+
+## 2.2 Matching
+
+**When to use:** Treatment is not randomly assigned, but you believe selection into treatment depends only on **observed** covariates $X_i$.
+
+**Identifying assumption:** Conditional Independence Assumption (CIA):
+$$
+(Y_{1i}, Y_{0i}) \perp\!\!\!\perp D_i \mid X_i
+$$
+
+Plus **overlap** (common support): $0 < P(D_i = 1 \mid X_i) < 1$ for all $X_i$.
+
+**Estimand:** ATT (most commonly)
+
+**Key formula (nearest-neighbor matching for ATT):**
+
+For each treated unit $i$, find the closest untreated unit $j(i)$ based on a distance metric (e.g., Mahalanobis distance):
+
+$$
+\hat\tau_{ATT} = \frac{1}{n_T} \sum_{i: D_i=1} \left[Y_i - Y_{j(i)}\right]
+$$
+
+*Mahalanobis distance:*
+$$
+d(X_i, X_j) = \sqrt{(X_i - X_j)' \hat\Sigma^{-1} (X_i - X_j)}
+$$
+
+### Bias-Corrected Matching (Abadie-Imbens)
+
+Standard nearest-neighbor matching has a bias of order $O(n^{-1/k})$ where $k$ is the dimension of $X$. Abadie & Imbens (2011) propose a bias correction:
+
+$$
+\hat\tau_{BC} = \frac{1}{n_T} \sum_{i: D_i=1} \left[Y_i - Y_{j(i)} - (\hat\mu_0(X_i) - \hat\mu_0(X_{j(i)}))\right]
+$$
+
+where $\hat\mu_0(X)$ is an estimate of $E[Y_{0i} \mid X_i = X]$ (e.g., from a linear regression on the control group). This also enables valid variance estimation.
+
+**Diagnostics:**
+
+- **Balance after matching:** Standardized mean differences should be small ($< 0.1$) for all covariates
+- **Common support:** Check that the distribution of $X$ overlaps between groups
+- **Sensitivity to matching parameters:** Try different numbers of matches, calipers, distance metrics
+
+```{python}
+# Simple nearest-neighbor matching (Mahalanobis)
+from sklearn.neighbors import NearestNeighbors
+
+n = 500
+X = np.random.randn(n, 2)
+D = (0.5 * X[:, 0] + 0.3 * X[:, 1] + np.random.randn(n) > 0).astype(int)
+Y = 3 * D + X[:, 0] + 0.5 * X[:, 1] + np.random.randn(n)  # true ATT = 3
+
+X_treated = X[D == 1]
+X_control = X[D == 0]
+Y_treated = Y[D == 1]
+Y_control = Y[D == 0]
+
+nn = NearestNeighbors(n_neighbors=1, metric='mahalanobis',
+                       metric_params={'V': np.cov(X.T)})
+nn.fit(X_control)
+distances, indices = nn.kneighbors(X_treated)
+matched_Y = Y_control[indices.flatten()]
+
+att = np.mean(Y_treated - matched_Y)
+print(f"Estimated ATT (NN matching): {att:.3f}")
+```
+
+**See also:** Lab 2 (Eggers & Hainmueller 2009; Dehejia & Wahba 1999)
+
+---
+
+## 2.3 Propensity Scores and Inverse Probability Weighting
+
+**When to use:** Same setting as matching (CIA holds), but high-dimensional $X_i$ makes direct matching difficult.
+
+**Identifying assumption:** CIA + overlap (same as matching). The **propensity score theorem** (Rosenbaum & Rubin 1983) shows that if CIA holds given $X_i$, it also holds given the scalar $e(X_i) = P(D_i = 1 \mid X_i)$.
+
+**Estimand:** ATE or ATT (depending on the weighting scheme)
+
+### Propensity Score Estimation
+
+Estimate $\hat{e}(X_i)$ via logistic regression (or any flexible classifier):
+
+$$
+\hat{e}(X_i) = \hat{P}(D_i = 1 \mid X_i) = \text{Logit}^{-1}(X_i' \hat\beta)
+$$
+
+### IPW Estimator (Horvitz-Thompson)
+
+*For ATE:*
+$$
+\hat\tau_{IPW} = \frac{1}{n} \sum_{i=1}^{n} \left[\frac{D_i Y_i}{\hat{e}(X_i)} - \frac{(1-D_i) Y_i}{1 - \hat{e}(X_i)}\right]
+$$
+
+*Normalized (Hajek) version:*
+$$
+\hat\tau_{IPW}^{norm} = \frac{\sum_i \frac{D_i Y_i}{\hat{e}(X_i)}}{\sum_i \frac{D_i}{\hat{e}(X_i)}} - \frac{\sum_i \frac{(1-D_i) Y_i}{1 - \hat{e}(X_i)}}{\sum_i \frac{(1-D_i)}{1 - \hat{e}(X_i)}}
+$$
+
+The normalized version is more stable when weights are extreme.
+
+*For ATT:*
+$$
+\hat\tau_{ATT} = \frac{1}{n_T} \sum_{i=1}^{n} \left[D_i Y_i - \frac{(1-D_i) \hat{e}(X_i) Y_i}{1 - \hat{e}(X_i)}\right]
+$$
+
+### Diagnostics
+
+- **Overlap / common support:** Plot the distribution of $\hat{e}(X_i)$ for treated vs. control. Lack of overlap $\Rightarrow$ extrapolation.
+- **Trimming:** Drop observations with $\hat{e}(X_i)$ near 0 or 1 (e.g., $< 0.01$ or $> 0.99$). Extreme weights dominate the estimator.
+- **Balance after weighting:** Compute weighted standardized mean differences. Good balance = SMD $< 0.1$.
+
+```{python}
+# IPW estimation
+from sklearn.linear_model import LogisticRegression
+
+n = 1000
+X = np.random.randn(n, 3)
+e_true = 1 / (1 + np.exp(-(0.5 * X[:, 0] + 0.3 * X[:, 1] - 0.2 * X[:, 2])))
+D = np.random.binomial(1, e_true)
+Y = 2.5 * D + X[:, 0] + 0.5 * X[:, 1] - X[:, 2] + np.random.randn(n)  # true ATE = 2.5
+
+# Estimate propensity score
+ps_model = LogisticRegression()
+ps_model.fit(X, D)
+e_hat = ps_model.predict_proba(X)[:, 1]
+
+# Trim extreme weights
+mask = (e_hat > 0.02) & (e_hat < 0.98)
+D_t, Y_t, e_t = D[mask], Y[mask], e_hat[mask]
+
+# IPW (Horvitz-Thompson)
+tau_ipw = np.mean(D_t * Y_t / e_t - (1 - D_t) * Y_t / (1 - e_t))
+
+# IPW (Hajek / normalized)
+tau_hajek = (np.sum(D_t * Y_t / e_t) / np.sum(D_t / e_t) -
+             np.sum((1 - D_t) * Y_t / (1 - e_t)) / np.sum((1 - D_t) / (1 - e_t)))
+
+print(f"IPW (Horvitz-Thompson) ATE: {tau_ipw:.3f}")
+print(f"IPW (Hajek/normalized) ATE: {tau_hajek:.3f}")
+```
+
+**Not covered in existing labs --- this is entirely new material.** For related concepts, see Lab 2 (matching under CIA).
+
+---
+
+## 2.4 Difference-in-Differences
+
+**When to use:** You observe treated and control groups before and after treatment, and you believe that absent treatment, both groups would have followed **parallel trends**.
+
+**Identifying assumption:** Parallel trends:
+$$
+E[Y_{0i,t} - Y_{0i,t-1} \mid D_i = 1] = E[Y_{0i,t} - Y_{0i,t-1} \mid D_i = 0]
+$$
+
+In words: the treated group's outcome would have changed by the same amount as the control group's in the absence of treatment.
+
+**Estimand:** ATT
+
+**Key formula (2×2 DiD):**
+
+$$
+\hat\tau_{DiD} = (\bar{Y}_{T,post} - \bar{Y}_{T,pre}) - (\bar{Y}_{C,post} - \bar{Y}_{C,pre})
+$$
+
+*Regression form:*
+$$
+Y_{it} = \alpha + \beta \cdot \text{Treated}_i + \gamma \cdot \text{Post}_t + \tau \cdot (\text{Treated}_i \times \text{Post}_t) + \varepsilon_{it}
+$$
+
+The coefficient $\tau$ on the interaction term is the DiD estimate.
+
+### Two-Way Fixed Effects (TWFE)
+
+With multiple units and time periods:
+$$
+Y_{it} = \alpha_i + \lambda_t + \tau D_{it} + \varepsilon_{it}
+$$
+
+where $\alpha_i$ are unit fixed effects and $\lambda_t$ are time fixed effects.
+
+**Warning:** With **staggered treatment adoption** (units adopt treatment at different times), the TWFE estimator can be biased. It computes a weighted average of all possible 2×2 DiD comparisons, and some weights can be **negative** (using already-treated units as controls). See Cheatsheet 3, Section 3.3 for modern solutions.
+
+### Diagnostics
+
+- **Pre-trends test:** Check that outcomes trend similarly before treatment (event study plot with leads)
+- **Placebo tests:** Apply DiD to a fake treatment date
+- **Parallel trends in levels vs. logs:** If trends diverge in levels, try log-transforming the outcome
+
+```{python}
+# 2x2 DiD
+n_units = 200
+treated = np.repeat([0, 1], n_units // 2)
+Y_pre = 5 + 2 * treated + np.random.randn(n_units)       # pre-period
+Y_post = 5 + 2 * treated + 1 + 3 * treated + np.random.randn(n_units)  # post: common trend +1, treatment effect +3
+
+did = (Y_post[treated == 1].mean() - Y_pre[treated == 1].mean()) - \
+      (Y_post[treated == 0].mean() - Y_pre[treated == 0].mean())
+print(f"DiD estimate: {did:.3f} (true effect = 3)")
+
+# Regression form
+Y = np.concatenate([Y_pre, Y_post])
+D = np.tile(treated, 2)
+Post = np.repeat([0, 1], n_units)
+interaction = D * Post
+X_reg = sm.add_constant(np.column_stack([D, Post, interaction]))
+model = sm.OLS(Y, X_reg).fit()
+print(f"OLS interaction coefficient: {model.params[3]:.3f}")
+```
+
+**See also:** Lab 3 (Dinas et al. 2019; Card & Krueger 1994)
+
+---
+
+## 2.5 Instrumental Variables
+
+**When to use:** Treatment $D_i$ is endogenous (correlated with unobserved factors affecting $Y_i$), but you have an **instrument** $Z_i$ that provides exogenous variation in $D_i$.
+
+**Identifying assumptions:**
+
+1. **Relevance:** $Cov(Z_i, D_i) \neq 0$ (the instrument affects treatment)
+2. **Exclusion restriction:** $Z_i$ affects $Y_i$ **only through** $D_i$ (no direct effect)
+3. **Independence:** $Z_i \perp\!\!\!\perp (Y_{1i}, Y_{0i}, D_{1i}, D_{0i})$
+4. **Monotonicity:** $D_{1i} \geq D_{0i}$ for all $i$ (no defiers)
+
+**Estimand:** LATE (Local Average Treatment Effect --- the effect for *compliers*)
+
+### Key Formulas
+
+*Wald estimator (binary instrument):*
+$$
+\hat\tau_{Wald} = \frac{E[Y_i \mid Z_i = 1] - E[Y_i \mid Z_i = 0]}{E[D_i \mid Z_i = 1] - E[D_i \mid Z_i = 0]} = \frac{\text{Reduced form}}{\text{First stage}}
+$$
+
+*Two-Stage Least Squares (2SLS):*
+
+- **First stage:** $D_i = \pi_0 + \pi_1 Z_i + X_i'\gamma + \nu_i$
+- **Second stage:** $Y_i = \beta_0 + \tau \hat{D}_i + X_i'\delta + \varepsilon_i$
+
+### The LATE Theorem (Imbens & Angrist 1994)
+
+With a binary instrument and heterogeneous effects, 2SLS/Wald identifies:
+
+$$
+\tau_{LATE} = E[Y_{1i} - Y_{0i} \mid D_{1i} > D_{0i}]
+$$
+
+The effect for **compliers** only --- those whose treatment status changes with the instrument. This excludes always-takers, never-takers, and (by monotonicity) defiers.
+
+### Compliance Types
+
+| Type | $D_{1i}$ (if $Z=1$) | $D_{0i}$ (if $Z=0$) | Behavior |
+|------|---------------------|---------------------|----------|
+| Complier | 1 | 0 | Treatment follows instrument |
+| Always-taker | 1 | 1 | Always treated regardless |
+| Never-taker | 0 | 0 | Never treated regardless |
+| Defier | 0 | 1 | Opposite of instrument (ruled out by monotonicity) |
+
+### Diagnostics
+
+- **First-stage F-statistic:** Rule of thumb: $F > 10$ (Stock & Yogo). With weak instruments, 2SLS is biased toward OLS.
+- **Reduced form:** Always report the reduced-form regression ($Y$ on $Z$). If the reduced form is zero, the instrument doesn't work.
+- **Over-identification test (Sargan/Hansen):** With more instruments than endogenous variables, test whether the over-identifying restrictions hold.
+- **Exclusion plausibility:** This is **untestable** --- argue it on institutional/theoretical grounds.
+
+```{python}
+# IV / 2SLS example
+from linearmodels.iv import IV2SLS
+
+n = 1000
+Z = np.random.binomial(1, 0.5, n)
+U = np.random.randn(n)  # unobserved confounder
+D = (0.6 * Z + 0.4 * U + np.random.randn(n) > 0).astype(int)
+Y = 4 * D + U + np.random.randn(n)  # true effect = 4, but D is endogenous
+
+# Naive OLS (biased)
+ols = sm.OLS(Y, sm.add_constant(D)).fit()
+
+# Wald estimator
+wald = (Y[Z == 1].mean() - Y[Z == 0].mean()) / (D[Z == 1].mean() - D[Z == 0].mean())
+
+# 2SLS
+df = pd.DataFrame({'Y': Y, 'D': D, 'Z': Z, 'const': 1})
+iv = IV2SLS(df['Y'], df[['const']], df['D'], df['Z']).fit()
+
+print(f"Naive OLS:       {ols.params[1]:.3f} (biased upward)")
+print(f"Wald estimator:  {wald:.3f}")
+print(f"2SLS estimate:   {iv.params.iloc[1]:.3f}")
+print(f"First-stage F:   {iv.first_stage.diagnostics.iloc[0]['f.stat']:.1f}")
+```
+
+**See also:** Lab 4 (Sesame Street; Acemoglu, Johnson & Robinson 2001)
+
+---
+
+## 2.6 Regression Discontinuity
+
+**When to use:** Treatment is assigned based on whether a **running variable** $R_i$ crosses a known cutoff $c$: units with $R_i \geq c$ are treated, those below are not.
+
+**Identifying assumption:** Continuity: The conditional expectation functions $E[Y_{1i} \mid R_i = r]$ and $E[Y_{0i} \mid R_i = r]$ are **continuous** at $r = c$. Units just above and just below the cutoff are comparable.
+
+**Estimand:** LATE at the cutoff: $\tau_{RDD} = E[Y_{1i} - Y_{0i} \mid R_i = c]$
+
+### Sharp RDD
+
+Treatment is a deterministic function of the running variable: $D_i = \mathbf{1}(R_i \geq c)$.
+
+$$
+\hat\tau_{RDD} = \lim_{r \downarrow c} E[Y_i \mid R_i = r] - \lim_{r \uparrow c} E[Y_i \mid R_i = r]
+$$
+
+*Local linear regression:* Fit separate linear regressions on each side of the cutoff within a bandwidth $h$:
+
+$$
+Y_i = \alpha + \tau D_i + \beta_1 (R_i - c) + \beta_2 D_i \cdot (R_i - c) + \varepsilon_i \quad \text{for } |R_i - c| \leq h
+$$
+
+### Fuzzy RDD
+
+Treatment probability **jumps** at the cutoff but doesn't go from 0 to 1. Essentially an IV setup where crossing the cutoff instruments for treatment:
+
+$$
+\hat\tau_{Fuzzy} = \frac{\lim_{r \downarrow c} E[Y_i \mid R_i = r] - \lim_{r \uparrow c} E[Y_i \mid R_i = r]}{\lim_{r \downarrow c} E[D_i \mid R_i = r] - \lim_{r \uparrow c} E[D_i \mid R_i = r]}
+$$
+
+### Bandwidth Selection
+
+- **Imbens-Kalyanaraman (IK):** Minimizes MSE of the local linear estimator
+- **Calonico-Cattaneo-Titiunik (CCT):** Bias-corrected with robust confidence intervals. The current standard.
+
+Trade-off: smaller bandwidth $\Rightarrow$ less bias but more variance.
+
+### Diagnostics
+
+- **McCrary density test:** Test for manipulation of the running variable. If units can sort around the cutoff, the density of $R_i$ should be smooth at $c$. A discontinuity suggests manipulation.
+- **Covariate smoothness:** Pre-treatment covariates should be continuous at the cutoff. Discontinuities suggest confounding.
+- **Bandwidth sensitivity:** Report results for $h/2$, $h$, and $2h$.
+- **Placebo cutoffs:** Estimate the "effect" at fake cutoffs where there should be none.
+
+```{python}
+# Sharp RDD with local linear regression
+n = 1000
+R = np.random.uniform(-1, 1, n)  # running variable, cutoff at 0
+D = (R >= 0).astype(int)
+Y = 0.5 * R + 2.5 * D - 0.3 * R * D + np.random.randn(n) * 0.5  # true effect at cutoff = 2.5
+
+# Local linear regression within bandwidth
+h = 0.5
+mask = np.abs(R) <= h
+R_local, D_local, Y_local = R[mask], D[mask], Y[mask]
+R_centered = R_local  # already centered at 0
+X_rdd = sm.add_constant(np.column_stack([D_local, R_centered, D_local * R_centered]))
+rdd_model = sm.OLS(Y_local, X_rdd).fit()
+
+print(f"RDD estimate (h={h}): {rdd_model.params[1]:.3f} (true = 2.5)")
+print(f"Std error: {rdd_model.bse[1]:.3f}")
+print(f"95% CI: [{rdd_model.conf_int()[1][0]:.3f}, {rdd_model.conf_int()[1][1]:.3f}]")
+```
+
+**See also:** Lab 5 (Meyersson 2014)

@@ -22,6 +22,16 @@ website:
             href: lab5_regression_discontinuity.qmd
           - text: "Midterm: COVID-19 Curfew"
             href: midterm_covid_curfew_evaluation.qmd
+      - text: "Cheatsheets"
+        menu:
+          - text: "1: Theoretical Foundations"
+            href: cheatsheet_01_foundations.qmd
+          - text: "2: Core Methods"
+            href: cheatsheet_02_core_methods.qmd
+          - text: "3: Advanced Methods"
+            href: cheatsheet_03_advanced_methods.qmd
+          - text: "4: Decision Guide"
+            href: cheatsheet_04_decision_guide.qmd
 
 format:
   html:
